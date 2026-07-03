@@ -1,0 +1,123 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-relay}
+      POSTGRES_USER: ${POSTGRES_USER:-relay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-relay_dev_password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-relay} -d ${POSTGRES_DB:-relay}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-relay}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-relay_dev_password}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      PROJECT_NAME: ${PROJECT_NAME:-Relay}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      API_V1_PREFIX: ${API_V1_PREFIX:-/api}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://relay:relay_dev_password@postgres:5432/relay}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-relay}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-relay_dev_password}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-relay.events}
+      RABBITMQ_AUDIT_QUEUE: ${RABBITMQ_AUDIT_QUEUE:-relay.events.audit}
+      RABBITMQ_ANALYTICS_QUEUE: ${RABBITMQ_ANALYTICS_QUEUE:-relay.events.analytics}
+      RABBITMQ_NOTIFICATIONS_QUEUE: ${RABBITMQ_NOTIFICATIONS_QUEUE:-relay.events.notifications}
+      RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-relay.events.dead_letter}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ./backend
+    environment:
+      PROJECT_NAME: ${PROJECT_NAME:-Relay}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      API_V1_PREFIX: ${API_V1_PREFIX:-/api}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://relay:relay_dev_password@postgres:5432/relay}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-relay}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-relay_dev_password}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-relay.events}
+      RABBITMQ_AUDIT_QUEUE: ${RABBITMQ_AUDIT_QUEUE:-relay.events.audit}
+      RABBITMQ_ANALYTICS_QUEUE: ${RABBITMQ_ANALYTICS_QUEUE:-relay.events.analytics}
+      RABBITMQ_NOTIFICATIONS_QUEUE: ${RABBITMQ_NOTIFICATIONS_QUEUE:-relay.events.notifications}
+      RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-relay.events.dead_letter}
+    depends_on:
+      backend:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "app.workers.event_worker"]
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - frontend
+      - backend
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  redis-data:
