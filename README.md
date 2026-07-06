@@ -10,7 +10,7 @@ Relay é uma plataforma full stack de processamento assíncrono de eventos com F
 - Banco de dados: PostgreSQL
 - Frontend: React, TypeScript e Vite
 - Infra: Docker Compose e Nginx
-- Observabilidade futura: Prometheus, Grafana e Loki
+- Observabilidade: Prometheus e Grafana; Loki futuro
 - CI futura: GitHub Actions
 
 ## Arquitetura Atual
@@ -194,7 +194,15 @@ O formato é compatível com Prometheus. O Docker Compose inclui um serviço `pr
 Para acessar:
 
 - Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000
 - Métricas diretas da API: http://localhost:8000/metrics
+
+Credenciais locais do Grafana:
+
+- Usuário: `relay`
+- Senha: `relay_dev_password`
+
+Essas credenciais são apenas para desenvolvimento local e podem ser alteradas via `GRAFANA_ADMIN_USER` e `GRAFANA_ADMIN_PASSWORD`.
 
 Métricas principais:
 
@@ -229,6 +237,46 @@ histogram_quantile(0.95, sum(rate(relay_event_processing_duration_seconds_bucket
 ```
 
 As métricas de API e reprocessamento manual são incrementadas diretamente no fluxo de código. As métricas atuais de status, tentativas e DLQ são calculadas a partir do PostgreSQL no momento do scrape. As métricas de worker são instrumentadas nos processos consumidores; para observabilidade completa por processo em produção, a próxima evolução é expor ou agregar métricas de cada worker individualmente.
+
+### Grafana
+
+O Grafana é provisionado automaticamente pelo Docker Compose.
+
+Datasource:
+
+- Nome: `Prometheus`
+- URL interna: `http://prometheus:9090`
+- Default: `true`
+
+Dashboard versionado:
+
+- Arquivo: `infra/grafana/dashboards/relay-observability.json`
+- Nome no Grafana: `Relay Observability`
+- Pasta: `Relay`
+
+Painéis disponíveis:
+
+- Eventos criados por minuto.
+- Eventos publicados por routing key.
+- Falhas de publicação.
+- Eventos processados.
+- Eventos com falha.
+- Retries por fila.
+- Eventos enviados para DLQ.
+- Total atual de eventos em DLQ.
+- Idade do evento mais antigo em DLQ.
+- Reprocessamentos manuais.
+- p95 de tempo de processamento.
+- Status dos eventos.
+
+Limitação atual: o Prometheus coleta o endpoint `/metrics` do backend. As métricas instrumentadas diretamente nos processos de worker existem no código, mas ainda não há endpoint Prometheus separado por worker nem agregador multiprocess. Por isso, os painéis de worker ficam prontos para uso completo quando essa exposição for adicionada. As métricas derivadas do PostgreSQL, como status e DLQ, já aparecem pelo scrape do backend.
+
+Próximos passos de observabilidade:
+
+- Adicionar RabbitMQ Exporter para filas, consumers, mensagens prontas e mensagens não confirmadas.
+- Expor métricas por worker ou usar um modelo multiprocess/Pushgateway.
+- Criar alertas Grafana para DLQ crescente, retries altos e falhas de publicação.
+- Versionar dashboards adicionais para RabbitMQ e infraestrutura.
 
 ## Estrutura
 
@@ -279,6 +327,7 @@ docker compose up --build
 - Health check: http://localhost/health
 - RabbitMQ Management: http://localhost:15672
 - Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000
 
 As credenciais padrão de desenvolvimento estão no `.env.example`. Elas não devem ser usadas em produção.
 
@@ -352,5 +401,6 @@ Para execução sem Docker, ajuste `DATABASE_URL`, `RABBITMQ_*` e `REDIS_URL` co
 - Adicionar filtros, paginação e detalhes de eventos no frontend.
 - Expor métricas Prometheus no backend e nos workers.
 - Adicionar logs estruturados com correlação por `correlation_id` e `trace_id`.
-- Integrar Loki e Grafana.
+- Adicionar RabbitMQ Exporter e alertas no Grafana.
+- Integrar Loki.
 - Criar pipeline de CI com lint, testes e build de imagens.
