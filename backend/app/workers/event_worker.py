@@ -2,6 +2,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any, Callable
 
 import pika
@@ -15,7 +16,13 @@ from app.models.event_attempt import EventAttempt
 from app.models.event_log import EventLog
 from app.models.dead_letter_event import DeadLetterEvent
 from app.observability.logging import configure_logging
-from app.observability.metrics import record_event_processed
+from app.observability.metrics import (
+    observe_event_processing_duration,
+    record_event_dead_lettered,
+    record_event_failed,
+    record_event_processed,
+    record_event_retried,
+)
 from app.queues.rabbitmq import (
     declare_topology,
     publish_dead_letter_event,
@@ -83,7 +90,13 @@ def _resolve_handler(routing_key: str) -> Callable[[dict[str, Any]], None]:
     return HANDLERS.get(namespace, audit_worker.handle_event)
 
 
-def process_event(message: dict[str, Any], routing_key: str, retry_count: int = 0) -> None:
+def process_event(
+    message: dict[str, Any],
+    routing_key: str,
+    retry_count: int = 0,
+    worker_name: str = "unknown",
+) -> None:
+    started_at = perf_counter()
     event_id = message["event_id"]
     handler = _resolve_handler(routing_key)
 
@@ -136,7 +149,14 @@ def process_event(message: dict[str, Any], routing_key: str, retry_count: int = 
                     },
                 )
             )
-            record_event_processed(event.event_type, routing_key)
+            record_event_processed(event.event_type, routing_key, worker_name)
+            observe_event_processing_duration(
+                event.event_type,
+                routing_key,
+                EventStatus.PROCESSED.value,
+                perf_counter() - started_at,
+                worker_name,
+            )
             db.commit()
         except Exception as exc:
             attempt.status = EventStatus.FAILED.value
@@ -155,6 +175,14 @@ def process_event(message: dict[str, Any], routing_key: str, retry_count: int = 
                         "routing_key": routing_key,
                     },
                 )
+            )
+            record_event_failed(event.event_type, routing_key, worker_name)
+            observe_event_processing_duration(
+                event.event_type,
+                routing_key,
+                EventStatus.FAILED.value,
+                perf_counter() - started_at,
+                worker_name,
             )
             db.commit()
             raise
@@ -182,6 +210,7 @@ def _record_retry(
     retry_queue: str,
     original_routing_key: str,
     error_message: str,
+    worker_name: str = "unknown",
 ) -> None:
     with SessionLocal() as db:
         event = db.get(Event, event_id)
@@ -202,6 +231,7 @@ def _record_retry(
                 },
             )
         )
+        record_event_retried(original_routing_key, retry_queue, retry_count, worker_name)
         db.commit()
 
 
@@ -211,6 +241,7 @@ def _mark_event_dead_letter(
     retry_count: int,
     original_routing_key: str,
     error_message: str,
+    worker_name: str = "unknown",
 ) -> None:
     with SessionLocal() as db:
         event = db.get(Event, event_id)
@@ -240,6 +271,7 @@ def _mark_event_dead_letter(
                 },
             )
         )
+        record_event_dead_lettered(original_routing_key, worker_name)
         db.commit()
 
 
@@ -268,7 +300,7 @@ def handle_message(
             channel.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        process_event(message, original_routing_key, retry_count)
+        process_event(message, original_routing_key, retry_count, worker_config.name)
         channel.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as exc:
         logger.exception("Failed to process queue message")
@@ -287,6 +319,7 @@ def handle_message(
                 next_retry_count,
                 original_routing_key,
                 error_message,
+                worker_config.name,
             )
         else:
             retry_policy = publish_retry_event(
@@ -301,6 +334,7 @@ def handle_message(
                 retry_policy.queue_name,
                 original_routing_key,
                 error_message,
+                worker_config.name,
             )
 
         channel.basic_ack(delivery_tag=method.delivery_tag)

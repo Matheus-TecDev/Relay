@@ -196,7 +196,18 @@ services:
     ports:
       - "80:80"
 
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    depends_on:
+      - backend
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
 volumes:
   postgres-data:
   rabbitmq-data:
   redis-data:
+  prometheus-data:

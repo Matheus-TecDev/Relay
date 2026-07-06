@@ -185,14 +185,50 @@ Os níveis de log também foram padronizados:
 
 ## Observabilidade
 
-A pasta `backend/app/observability/` prepara a base para:
+O Relay expõe métricas reais no endpoint:
 
-- logging estruturado;
-- métricas Prometheus;
-- geração e propagação de `correlation_id` e `trace_id`;
-- integração futura com Grafana e Loki.
+- `GET /metrics`
 
-Nesta etapa, as métricas ainda são placeholders para manter a implementação simples e extensível.
+O formato é compatível com Prometheus. O Docker Compose inclui um serviço `prometheus` configurado para coletar métricas do backend em `backend:8000/metrics`.
+
+Para acessar:
+
+- Prometheus: http://localhost:9090
+- Métricas diretas da API: http://localhost:8000/metrics
+
+Métricas principais:
+
+- `relay_events_created_total`: eventos recebidos pela API.
+- `relay_events_published_total`: eventos publicados no RabbitMQ.
+- `relay_event_publish_failures_total`: falhas ao publicar no RabbitMQ.
+- `relay_event_creation_duration_seconds`: tempo de criação e publicação do evento.
+- `relay_worker_events_processed_total`: eventos processados com sucesso por worker.
+- `relay_worker_events_failed_total`: falhas de processamento por worker.
+- `relay_worker_events_retried_total`: eventos enviados para retry.
+- `relay_worker_events_dead_lettered_total`: eventos enviados para DLQ.
+- `relay_worker_events_total`: transições de status registradas pelos workers.
+- `relay_event_processing_duration_seconds`: duração do processamento nos workers.
+- `relay_dead_letter_events_total`: quantidade atual de eventos na DLQ.
+- `relay_dead_letter_oldest_event_age_seconds`: idade aproximada do evento mais antigo na DLQ.
+- `relay_dead_letter_reprocess_total`: reprocessamentos manuais solicitados.
+- `relay_dead_letter_reprocess_failures_total`: falhas ou bloqueios de reprocessamento manual.
+- `relay_events_by_status`: quantidade atual de eventos por status.
+- `relay_event_attempts_by_status`: quantidade atual de tentativas por status.
+
+Exemplos de PromQL:
+
+```promql
+sum(rate(relay_events_created_total[5m]))
+sum(rate(relay_events_published_total[5m])) by (routing_key)
+sum(rate(relay_worker_events_failed_total[5m])) by (worker_name, routing_key)
+sum(rate(relay_worker_events_retried_total[5m])) by (retry_queue)
+relay_dead_letter_events_total
+relay_dead_letter_oldest_event_age_seconds
+sum(rate(relay_dead_letter_reprocess_total[15m])) by (routing_key)
+histogram_quantile(0.95, sum(rate(relay_event_processing_duration_seconds_bucket[5m])) by (le, routing_key))
+```
+
+As métricas de API e reprocessamento manual são incrementadas diretamente no fluxo de código. As métricas atuais de status, tentativas e DLQ são calculadas a partir do PostgreSQL no momento do scrape. As métricas de worker são instrumentadas nos processos consumidores; para observabilidade completa por processo em produção, a próxima evolução é expor ou agregar métricas de cada worker individualmente.
 
 ## Estrutura
 
@@ -242,6 +278,7 @@ docker compose up --build
 - API direta: http://localhost:8000
 - Health check: http://localhost/health
 - RabbitMQ Management: http://localhost:15672
+- Prometheus: http://localhost:9090
 
 As credenciais padrão de desenvolvimento estão no `.env.example`. Elas não devem ser usadas em produção.
 

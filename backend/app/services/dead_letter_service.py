@@ -7,6 +7,10 @@ from app.core.enums import EventLogLevel, EventStatus
 from app.models.dead_letter_event import DeadLetterEvent
 from app.models.event import Event
 from app.models.event_log import EventLog
+from app.observability.metrics import (
+    record_dead_letter_reprocess,
+    record_dead_letter_reprocess_failed,
+)
 from app.queues.rabbitmq import publish_event
 
 
@@ -55,11 +59,12 @@ class DeadLetterService:
         if event is None:
             raise DeadLetterEventNotFoundError
 
-        self._ensure_reprocess_is_safe(event.id)
-
         routing_key = dead_letter_event.original_routing_key or event.routing_key
         if not routing_key:
+            record_dead_letter_reprocess_failed("unknown", "missing_routing_key")
             raise UnsafeReprocessError("Dead letter event does not have a routing key.")
+
+        self._ensure_reprocess_is_safe(event.id, routing_key)
 
         message = {
             "event_id": event.id,
@@ -73,6 +78,7 @@ class DeadLetterService:
         try:
             publish_event(message, routing_key)
         except Exception as exc:
+            record_dead_letter_reprocess_failed(routing_key, "publish_failed")
             self._log(
                 event.id,
                 EventLogLevel.ERROR,
@@ -87,6 +93,7 @@ class DeadLetterService:
             raise DeadLetterPublishError from exc
 
         event.status = EventStatus.QUEUED.value
+        record_dead_letter_reprocess(routing_key)
         self._log(
             event.id,
             EventLogLevel.INFO,
@@ -102,7 +109,7 @@ class DeadLetterService:
         self.db.refresh(dead_letter_event)
         return dead_letter_event
 
-    def _ensure_reprocess_is_safe(self, event_id: str) -> None:
+    def _ensure_reprocess_is_safe(self, event_id: str, routing_key: str) -> None:
         recent_cutoff = datetime.now(UTC) - timedelta(minutes=1)
         recent_reprocess = self.db.scalar(
             select(EventLog)
@@ -113,6 +120,7 @@ class DeadLetterService:
             .limit(1)
         )
         if recent_reprocess is not None:
+            record_dead_letter_reprocess_failed(routing_key, "recent_duplicate")
             raise UnsafeReprocessError("Event was manually reprocessed recently.")
 
     def _log(
