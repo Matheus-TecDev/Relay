@@ -200,11 +200,25 @@ services:
     image: prom/prometheus:v2.55.1
     depends_on:
       - backend
+      - rabbitmq-exporter
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
+
+  rabbitmq-exporter:
+    image: kbudde/rabbitmq-exporter:v1.0.0
+    environment:
+      RABBIT_URL: http://rabbitmq:15672
+      RABBIT_USER: ${RABBITMQ_DEFAULT_USER:-relay}
+      RABBIT_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-relay_dev_password}
+      PUBLISH_PORT: "9419"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "9419:9419"
 
   grafana:
     image: grafana/grafana:11.4.0

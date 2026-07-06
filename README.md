@@ -190,12 +190,14 @@ O Relay expõe métricas reais no endpoint:
 - `GET /metrics`
 
 O formato é compatível com Prometheus. O Docker Compose inclui um serviço `prometheus` configurado para coletar métricas do backend em `backend:8000/metrics`.
+O ambiente também inclui um RabbitMQ Exporter para coletar métricas reais do broker pela API de Management do RabbitMQ.
 
 Para acessar:
 
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000
 - Métricas diretas da API: http://localhost:8000/metrics
+- RabbitMQ Exporter: http://localhost:9419/metrics
 
 Credenciais locais do Grafana:
 
@@ -269,11 +271,58 @@ Painéis disponíveis:
 - p95 de tempo de processamento.
 - Status dos eventos.
 
+Dashboard RabbitMQ:
+
+- Arquivo: `infra/grafana/dashboards/relay-rabbitmq.json`
+- Nome no Grafana: `Relay RabbitMQ`
+- Pasta: `Relay`
+
+Painéis do broker:
+
+- Mensagens prontas por fila.
+- Mensagens não confirmadas por fila.
+- Consumidores por fila.
+- Taxa de publicação.
+- Taxa de entrega com ack.
+- Mensagens em DLQ.
+- Mensagens em retry queues.
+- Estado das filas principais.
+- Conexões.
+- Canais.
+- Memória usada por node.
+- Mensagens totais por fila.
+
+RabbitMQ Exporter:
+
+- Serviço Docker Compose: `rabbitmq-exporter`
+- Imagem: `kbudde/rabbitmq-exporter:v1.0.0`
+- URL interna do RabbitMQ: `http://rabbitmq:15672`
+- Endpoint de métricas local: http://localhost:9419/metrics
+- Job Prometheus: `rabbitmq-exporter`
+
+Exemplos de PromQL para RabbitMQ:
+
+```promql
+rabbitmq_queue_messages_ready
+rabbitmq_queue_messages_unacknowledged
+rabbitmq_queue_consumers
+sum(rate(rabbitmq_queue_messages_published_total[5m])) by (queue)
+sum(rate(rabbitmq_queue_messages_delivered_total[5m])) by (queue)
+rabbitmq_queue_messages{queue="relay.events.dead_letter"}
+rabbitmq_queue_messages{queue=~"relay\\.events\\.retry\\..*"}
+rabbitmq_queue_messages{queue=~"relay\\.events\\.(audit|analytics|notifications)"}
+rabbitmq_queue_state{queue=~"relay\\.events\\.(audit|analytics|notifications)"}
+rabbitmq_connections
+rabbitmq_channels
+rabbitmq_node_mem_used
+```
+
+Para verificar DLQ e retry queues pelo Grafana, abra o dashboard `Relay RabbitMQ` e acompanhe os painéis `Mensagens em DLQ`, `Mensagens em retry queues`, `Mensagens prontas por fila` e `Mensagens não confirmadas por fila`.
+
 Limitação atual: o Prometheus coleta o endpoint `/metrics` do backend. As métricas instrumentadas diretamente nos processos de worker existem no código, mas ainda não há endpoint Prometheus separado por worker nem agregador multiprocess. Por isso, os painéis de worker ficam prontos para uso completo quando essa exposição for adicionada. As métricas derivadas do PostgreSQL, como status e DLQ, já aparecem pelo scrape do backend.
 
 Próximos passos de observabilidade:
 
-- Adicionar RabbitMQ Exporter para filas, consumers, mensagens prontas e mensagens não confirmadas.
 - Expor métricas por worker ou usar um modelo multiprocess/Pushgateway.
 - Criar alertas Grafana para DLQ crescente, retries altos e falhas de publicação.
 - Versionar dashboards adicionais para RabbitMQ e infraestrutura.
@@ -326,6 +375,7 @@ docker compose up --build
 - API direta: http://localhost:8000
 - Health check: http://localhost/health
 - RabbitMQ Management: http://localhost:15672
+- RabbitMQ Exporter: http://localhost:9419/metrics
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000
 
