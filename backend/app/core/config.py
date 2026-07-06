@@ -19,10 +19,15 @@ class Settings(BaseSettings):
     rabbitmq_password: str = "relay_dev_password"
     rabbitmq_vhost: str = "/"
     rabbitmq_exchange: str = "relay.events"
+    rabbitmq_dlx: str = "relay.events.dlx"
     rabbitmq_audit_queue: str = "relay.events.audit"
     rabbitmq_analytics_queue: str = "relay.events.analytics"
     rabbitmq_notifications_queue: str = "relay.events.notifications"
     rabbitmq_dead_letter_queue: str = "relay.events.dead_letter"
+    rabbitmq_retry_queue_10s: str = "relay.events.retry.10s"
+    rabbitmq_retry_queue_30s: str = "relay.events.retry.30s"
+    rabbitmq_retry_queue_5m: str = "relay.events.retry.5m"
+    rabbitmq_max_retries: int = 3
 
     redis_url: str = "redis://localhost:6379/0"
 

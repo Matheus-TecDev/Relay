@@ -26,25 +26,43 @@ Ambos são salvos no banco e enviados na mensagem publicada no RabbitMQ.
 
 ## RabbitMQ
 
-Exchange:
+Exchanges:
 
-- Nome: `relay.events`
+- Principal: `relay.events`
+- Dead Letter Exchange: `relay.events.dlx`
 - Tipo: `topic`
-- Mensagens: persistentes
+- Duráveis
+- Mensagens persistentes
 
-Filas iniciais:
+Filas de domínio:
 
 - `relay.events.audit`
 - `relay.events.analytics`
 - `relay.events.notifications`
+
+Fila de dead letter:
+
 - `relay.events.dead_letter`
 
-Bindings iniciais:
+Filas de retry:
+
+- `relay.events.retry.10s`
+- `relay.events.retry.30s`
+- `relay.events.retry.5m`
+
+Bindings principais:
 
 - `audit.*` e `events.*` -> `relay.events.audit`
 - `analytics.*` -> `relay.events.analytics`
 - `notifications.*` -> `relay.events.notifications`
-- `dead_letter.*` -> `relay.events.dead_letter`
+- `retry.*` -> `relay.events.audit`
+
+Bindings na DLX:
+
+- `retry.10s` -> `relay.events.retry.10s`
+- `retry.30s` -> `relay.events.retry.30s`
+- `retry.5m` -> `relay.events.retry.5m`
+- `dead_letter.#` -> `relay.events.dead_letter`
 
 Exemplos de routing keys:
 
@@ -52,6 +70,30 @@ Exemplos de routing keys:
 - `audit.created`
 - `analytics.page_viewed`
 - `notifications.email_requested`
+
+### Retry, Backoff e DLQ
+
+O worker não usa `basic_nack(requeue=True)` para retry, evitando loop infinito na fila principal. Quando uma tentativa falha, a mensagem original é publicada novamente na Dead Letter Exchange com o header RabbitMQ `x-retry-count` e a routing key de retry adequada. Depois disso, a mensagem original recebe `basic_ack`.
+
+Fluxo de falha:
+
+- Falha 1: publica em `relay.events.retry.10s` com `x-retry-count=1`.
+- Falha 2: publica em `relay.events.retry.30s` com `x-retry-count=2`.
+- Falha 3: publica em `relay.events.retry.5m` com `x-retry-count=3`.
+- Falha 4: publica na DLQ `relay.events.dead_letter`, marca o evento como `dead_letter` e registra em `dead_letter_events`.
+
+As filas de retry possuem TTL:
+
+- `relay.events.retry.10s`: 10 segundos.
+- `relay.events.retry.30s`: 30 segundos.
+- `relay.events.retry.5m`: 5 minutos.
+
+Quando o TTL expira, a mensagem volta para a exchange principal `relay.events`. O header `x-original-routing-key` preserva a routing key original do evento para que o worker resolva o handler correto mesmo quando a mensagem retorna a partir de uma fila de retry.
+
+Diferença entre retry e DLQ:
+
+- Retry é uma tentativa controlada de reprocessar uma falha recuperável após um atraso progressivo.
+- DLQ é o destino final de mensagens que excederam o limite de tentativas e precisam de análise ou reprocessamento manual.
 
 ## Workers
 
@@ -196,8 +238,7 @@ Para execução sem Docker, ajuste `DATABASE_URL`, `RABBITMQ_*` e `REDIS_URL` co
 
 ## Roadmap Técnico
 
-- Implementar retry com backoff.
-- Criar DLQ real com dead-letter exchange e política de reprocessamento.
+- Criar política de reprocessamento manual para eventos em DLQ.
 - Separar workers por processo e fila.
 - Adicionar autenticação e autorização.
 - Adicionar filtros, paginação e detalhes de eventos no frontend.

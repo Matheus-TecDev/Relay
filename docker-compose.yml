@@ -58,10 +58,15 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-relay_dev_password}
       RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-relay.events}
+      RABBITMQ_DLX: ${RABBITMQ_DLX:-relay.events.dlx}
       RABBITMQ_AUDIT_QUEUE: ${RABBITMQ_AUDIT_QUEUE:-relay.events.audit}
       RABBITMQ_ANALYTICS_QUEUE: ${RABBITMQ_ANALYTICS_QUEUE:-relay.events.analytics}
       RABBITMQ_NOTIFICATIONS_QUEUE: ${RABBITMQ_NOTIFICATIONS_QUEUE:-relay.events.notifications}
       RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-relay.events.dead_letter}
+      RABBITMQ_RETRY_QUEUE_10S: ${RABBITMQ_RETRY_QUEUE_10S:-relay.events.retry.10s}
+      RABBITMQ_RETRY_QUEUE_30S: ${RABBITMQ_RETRY_QUEUE_30S:-relay.events.retry.30s}
+      RABBITMQ_RETRY_QUEUE_5M: ${RABBITMQ_RETRY_QUEUE_5M:-relay.events.retry.5m}
+      RABBITMQ_MAX_RETRIES: ${RABBITMQ_MAX_RETRIES:-3}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       postgres:
@@ -88,10 +93,15 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-relay_dev_password}
       RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-relay.events}
+      RABBITMQ_DLX: ${RABBITMQ_DLX:-relay.events.dlx}
       RABBITMQ_AUDIT_QUEUE: ${RABBITMQ_AUDIT_QUEUE:-relay.events.audit}
       RABBITMQ_ANALYTICS_QUEUE: ${RABBITMQ_ANALYTICS_QUEUE:-relay.events.analytics}
       RABBITMQ_NOTIFICATIONS_QUEUE: ${RABBITMQ_NOTIFICATIONS_QUEUE:-relay.events.notifications}
       RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-relay.events.dead_letter}
+      RABBITMQ_RETRY_QUEUE_10S: ${RABBITMQ_RETRY_QUEUE_10S:-relay.events.retry.10s}
+      RABBITMQ_RETRY_QUEUE_30S: ${RABBITMQ_RETRY_QUEUE_30S:-relay.events.retry.30s}
+      RABBITMQ_RETRY_QUEUE_5M: ${RABBITMQ_RETRY_QUEUE_5M:-relay.events.retry.5m}
+      RABBITMQ_MAX_RETRIES: ${RABBITMQ_MAX_RETRIES:-3}
     depends_on:
       backend:
         condition: service_started
