@@ -95,6 +95,32 @@ Diferença entre retry e DLQ:
 - Retry é uma tentativa controlada de reprocessar uma falha recuperável após um atraso progressivo.
 - DLQ é o destino final de mensagens que excederam o limite de tentativas e precisam de análise ou reprocessamento manual.
 
+### DLQ Operacional
+
+A DLQ operacional é a área usada para investigar mensagens que chegaram ao fim do ciclo automático de retry. O Relay mantém o histórico no PostgreSQL e expõe endpoints para listar, detalhar e reprocessar eventos mortos sem apagar registros.
+
+Endpoints:
+
+- `GET /api/dead-letter-events`: lista eventos em DLQ com motivo, erro, retry count, routing key original, `correlation_id`, `trace_id` e status do evento original.
+- `GET /api/dead-letter-events/{id}`: retorna payload, evento original, tentativas e logs relacionados.
+- `POST /api/dead-letter-events/{id}/reprocess`: republica o evento existente na exchange principal `relay.events`.
+
+O reprocessamento manual usa `original_routing_key`, preserva `correlation_id` e `trace_id`, atualiza o evento original para `queued` e registra um `EventLog` com a ação operacional. O Relay não cria outro `Event` para essa operação.
+
+Riscos de reprocessamento:
+
+- O handler pode executar efeitos colaterais novamente se ainda não for idempotente.
+- O erro original pode continuar acontecendo se a causa raiz não foi corrigida.
+- O backend bloqueia reprocessamentos manuais repetidos em uma janela curta para reduzir cliques duplicados, mas isso não substitui idempotência real nos consumers.
+
+Fluxo operacional recomendado:
+
+1. Abrir a área de Dead Letter Queue no dashboard.
+2. Verificar erro, payload, tentativas e logs.
+3. Corrigir a causa raiz quando necessário.
+4. Clicar em `Reprocessar`.
+5. Acompanhar o evento voltar para `queued` e ser consumido pelo worker do domínio.
+
 ## Workers
 
 O Docker Compose executa consumers independentes por domínio. Todos usam o mesmo código base de consumo resiliente, mas cada processo consome uma fila específica e aplica seu próprio conjunto de routing keys aceitas.
@@ -245,6 +271,18 @@ Cria, persiste e publica um evento na exchange `relay.events`.
 
 Lista eventos recentes para alimentar o dashboard inicial.
 
+### `GET /api/dead-letter-events`
+
+Lista eventos que foram enviados para DLQ.
+
+### `GET /api/dead-letter-events/{id}`
+
+Mostra detalhes operacionais do evento morto, incluindo payload, tentativas e logs.
+
+### `POST /api/dead-letter-events/{id}/reprocess`
+
+Republica o evento original na exchange principal usando a routing key original.
+
 ## Desenvolvimento Local sem Docker
 
 Use Python 3.12 para manter o ambiente local alinhado ao `backend/Dockerfile`.
@@ -272,7 +310,7 @@ Para execução sem Docker, ajuste `DATABASE_URL`, `RABBITMQ_*` e `REDIS_URL` co
 
 ## Roadmap Técnico
 
-- Criar política de reprocessamento manual para eventos em DLQ.
+- Adicionar estado operacional para DLQ resolvida ou descartada.
 - Adicionar autenticação e autorização.
 - Adicionar filtros, paginação e detalhes de eventos no frontend.
 - Expor métricas Prometheus no backend e nos workers.

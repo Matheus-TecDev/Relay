@@ -1,7 +1,9 @@
 import { Activity, CheckCircle2, Clock3, TriangleAlert } from "lucide-react";
 
+import { DeadLetterPanel } from "../components/DeadLetterPanel";
 import { EventsTable } from "../components/EventsTable";
 import { MetricCard } from "../components/MetricCard";
+import { useDeadLetterEvents } from "../hooks/useDeadLetterEvents";
 import { useEvents } from "../hooks/useEvents";
 
 const metrics = [
@@ -13,6 +15,12 @@ const metrics = [
 
 export function Dashboard() {
   const { events, isLoading, error } = useEvents();
+  const {
+    deadLetterEvents,
+    isLoading: isDeadLetterLoading,
+    error: deadLetterError,
+    refresh: refreshDeadLetterEvents
+  } = useDeadLetterEvents();
 
   return (
     <main className="app-shell">
@@ -40,6 +48,13 @@ export function Dashboard() {
         </div>
         <EventsTable events={events} isLoading={isLoading} />
       </section>
+
+      <DeadLetterPanel
+        events={deadLetterEvents}
+        isLoading={isDeadLetterLoading}
+        error={deadLetterError}
+        onRefresh={refreshDeadLetterEvents}
+      />
     </main>
   );
 }
