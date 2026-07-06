@@ -31,6 +31,10 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379/0"
 
+    worker_name: str = "relay-audit-worker"
+    worker_queue: str = "relay.events.audit"
+    worker_routing_key: str = "events.*,audit.*"
+
     backend_cors_origins: str = Field(
         default="http://localhost,http://localhost:5173,http://127.0.0.1:5173"
     )

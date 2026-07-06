@@ -1,5 +1,6 @@
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable
 
@@ -27,12 +28,54 @@ from app.workers import analytics_worker, audit_worker, notification_worker
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class WorkerConfig:
+    name: str
+    queue_name: str
+    routing_keys: tuple[str, ...]
+
+
 HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "audit": audit_worker.handle_event,
     "analytics": analytics_worker.handle_event,
     "notifications": notification_worker.handle_event,
     "events": audit_worker.handle_event,
 }
+
+
+def _routing_keys_from_env(value: str) -> tuple[str, ...]:
+    return tuple(routing_key.strip() for routing_key in value.split(",") if routing_key.strip())
+
+
+def build_worker_config(
+    name: str | None = None,
+    queue_name: str | None = None,
+    routing_keys: tuple[str, ...] | None = None,
+) -> WorkerConfig:
+    return WorkerConfig(
+        name=name or settings.worker_name,
+        queue_name=queue_name or settings.worker_queue,
+        routing_keys=routing_keys or _routing_keys_from_env(settings.worker_routing_key),
+    )
+
+
+def _routing_key_matches(pattern: str, routing_key: str) -> bool:
+    pattern_parts = pattern.split(".")
+    routing_parts = routing_key.split(".")
+
+    for index, pattern_part in enumerate(pattern_parts):
+        if pattern_part == "#":
+            return True
+        if index >= len(routing_parts):
+            return False
+        if pattern_part != "*" and pattern_part != routing_parts[index]:
+            return False
+
+    return len(pattern_parts) == len(routing_parts)
+
+
+def worker_accepts_routing_key(worker_config: WorkerConfig, routing_key: str) -> bool:
+    return any(_routing_key_matches(pattern, routing_key) for pattern in worker_config.routing_keys)
 
 
 def _resolve_handler(routing_key: str) -> Callable[[dict[str, Any]], None]:
@@ -205,7 +248,9 @@ def handle_message(
     method: pika.spec.Basic.Deliver,
     properties: pika.BasicProperties,
     body: bytes,
+    worker_config: WorkerConfig | None = None,
 ) -> None:
+    worker_config = worker_config or build_worker_config()
     headers = dict(properties.headers or {})
     retry_count = _retry_count_from_headers(headers)
     original_routing_key = _original_routing_key(headers, method.routing_key)
@@ -213,6 +258,16 @@ def handle_message(
 
     try:
         message = json.loads(body.decode("utf-8"))
+        if not worker_accepts_routing_key(worker_config, original_routing_key):
+            logger.info(
+                "Skipping message for another worker. worker=%s routing_key=%s queue=%s",
+                worker_config.name,
+                original_routing_key,
+                worker_config.queue_name,
+            )
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+            return
+
         process_event(message, original_routing_key, retry_count)
         channel.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as exc:
@@ -251,15 +306,50 @@ def handle_message(
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
 
-def main() -> None:
+def build_message_handler(
+    worker_config: WorkerConfig,
+) -> Callable[
+    [
+        pika.adapters.blocking_connection.BlockingChannel,
+        pika.spec.Basic.Deliver,
+        pika.BasicProperties,
+        bytes,
+    ],
+    None,
+]:
+    def _handle_message(
+        channel: pika.adapters.blocking_connection.BlockingChannel,
+        method: pika.spec.Basic.Deliver,
+        properties: pika.BasicProperties,
+        body: bytes,
+    ) -> None:
+        handle_message(channel, method, properties, body, worker_config)
+
+    return _handle_message
+
+
+def run_worker(worker_config: WorkerConfig | None = None) -> None:
     configure_logging()
-    queue_name = settings.rabbitmq_audit_queue
-    logger.info("Starting Relay worker. exchange=%s queue=%s", settings.rabbitmq_exchange, queue_name)
+    worker_config = worker_config or build_worker_config()
+    logger.info(
+        "Starting Relay worker. name=%s exchange=%s queue=%s routing_keys=%s",
+        worker_config.name,
+        settings.rabbitmq_exchange,
+        worker_config.queue_name,
+        ",".join(worker_config.routing_keys),
+    )
     with rabbitmq_channel() as channel:
         declare_topology(channel)
         channel.basic_qos(prefetch_count=1)
-        channel.basic_consume(queue=queue_name, on_message_callback=handle_message)
+        channel.basic_consume(
+            queue=worker_config.queue_name,
+            on_message_callback=build_message_handler(worker_config),
+        )
         channel.start_consuming()
+
+
+def main() -> None:
+    run_worker()
 
 
 if __name__ == "__main__":

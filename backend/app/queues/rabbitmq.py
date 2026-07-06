@@ -9,8 +9,8 @@ from app.core.config import settings
 
 QUEUE_BINDINGS = {
     settings.rabbitmq_audit_queue: ("audit.*", "events.*", "retry.*"),
-    settings.rabbitmq_analytics_queue: ("analytics.*",),
-    settings.rabbitmq_notifications_queue: ("notifications.*",),
+    settings.rabbitmq_analytics_queue: ("analytics.*", "retry.*"),
+    settings.rabbitmq_notifications_queue: ("notifications.*", "retry.*"),
 }
 
 DEAD_LETTER_ROUTING_KEY = "dead_letter.event"

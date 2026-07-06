@@ -79,10 +79,13 @@ services:
     ports:
       - "8000:8000"
 
-  worker:
+  relay-audit-worker:
     build:
       context: ./backend
     environment:
+      WORKER_NAME: relay-audit-worker
+      WORKER_QUEUE: ${RABBITMQ_AUDIT_QUEUE:-relay.events.audit}
+      WORKER_ROUTING_KEY: events.*,audit.*
       PROJECT_NAME: ${PROJECT_NAME:-Relay}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       API_V1_PREFIX: ${API_V1_PREFIX:-/api}
@@ -107,7 +110,73 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
-    command: ["python", "-m", "app.workers.event_worker"]
+    command: ["python", "-m", "app.workers.audit_consumer"]
+
+  relay-analytics-worker:
+    build:
+      context: ./backend
+    environment:
+      WORKER_NAME: relay-analytics-worker
+      WORKER_QUEUE: ${RABBITMQ_ANALYTICS_QUEUE:-relay.events.analytics}
+      WORKER_ROUTING_KEY: analytics.*
+      PROJECT_NAME: ${PROJECT_NAME:-Relay}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      API_V1_PREFIX: ${API_V1_PREFIX:-/api}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://relay:relay_dev_password@postgres:5432/relay}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-relay}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-relay_dev_password}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-relay.events}
+      RABBITMQ_DLX: ${RABBITMQ_DLX:-relay.events.dlx}
+      RABBITMQ_AUDIT_QUEUE: ${RABBITMQ_AUDIT_QUEUE:-relay.events.audit}
+      RABBITMQ_ANALYTICS_QUEUE: ${RABBITMQ_ANALYTICS_QUEUE:-relay.events.analytics}
+      RABBITMQ_NOTIFICATIONS_QUEUE: ${RABBITMQ_NOTIFICATIONS_QUEUE:-relay.events.notifications}
+      RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-relay.events.dead_letter}
+      RABBITMQ_RETRY_QUEUE_10S: ${RABBITMQ_RETRY_QUEUE_10S:-relay.events.retry.10s}
+      RABBITMQ_RETRY_QUEUE_30S: ${RABBITMQ_RETRY_QUEUE_30S:-relay.events.retry.30s}
+      RABBITMQ_RETRY_QUEUE_5M: ${RABBITMQ_RETRY_QUEUE_5M:-relay.events.retry.5m}
+      RABBITMQ_MAX_RETRIES: ${RABBITMQ_MAX_RETRIES:-3}
+    depends_on:
+      backend:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "app.workers.analytics_consumer"]
+
+  relay-notification-worker:
+    build:
+      context: ./backend
+    environment:
+      WORKER_NAME: relay-notification-worker
+      WORKER_QUEUE: ${RABBITMQ_NOTIFICATIONS_QUEUE:-relay.events.notifications}
+      WORKER_ROUTING_KEY: notifications.*
+      PROJECT_NAME: ${PROJECT_NAME:-Relay}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      API_V1_PREFIX: ${API_V1_PREFIX:-/api}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://relay:relay_dev_password@postgres:5432/relay}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-relay}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-relay_dev_password}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-relay.events}
+      RABBITMQ_DLX: ${RABBITMQ_DLX:-relay.events.dlx}
+      RABBITMQ_AUDIT_QUEUE: ${RABBITMQ_AUDIT_QUEUE:-relay.events.audit}
+      RABBITMQ_ANALYTICS_QUEUE: ${RABBITMQ_ANALYTICS_QUEUE:-relay.events.analytics}
+      RABBITMQ_NOTIFICATIONS_QUEUE: ${RABBITMQ_NOTIFICATIONS_QUEUE:-relay.events.notifications}
+      RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-relay.events.dead_letter}
+      RABBITMQ_RETRY_QUEUE_10S: ${RABBITMQ_RETRY_QUEUE_10S:-relay.events.retry.10s}
+      RABBITMQ_RETRY_QUEUE_30S: ${RABBITMQ_RETRY_QUEUE_30S:-relay.events.retry.30s}
+      RABBITMQ_RETRY_QUEUE_5M: ${RABBITMQ_RETRY_QUEUE_5M:-relay.events.retry.5m}
+      RABBITMQ_MAX_RETRIES: ${RABBITMQ_MAX_RETRIES:-3}
+    depends_on:
+      backend:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    command: ["python", "-m", "app.workers.notification_consumer"]
 
   frontend:
     build:

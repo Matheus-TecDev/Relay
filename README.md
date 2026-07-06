@@ -55,7 +55,7 @@ Bindings principais:
 - `audit.*` e `events.*` -> `relay.events.audit`
 - `analytics.*` -> `relay.events.analytics`
 - `notifications.*` -> `relay.events.notifications`
-- `retry.*` -> `relay.events.audit`
+- `retry.*` -> filas de domínio para liberação de mensagens após TTL
 
 Bindings na DLX:
 
@@ -88,7 +88,7 @@ As filas de retry possuem TTL:
 - `relay.events.retry.30s`: 30 segundos.
 - `relay.events.retry.5m`: 5 minutos.
 
-Quando o TTL expira, a mensagem volta para a exchange principal `relay.events`. O header `x-original-routing-key` preserva a routing key original do evento para que o worker resolva o handler correto mesmo quando a mensagem retorna a partir de uma fila de retry.
+Quando o TTL expira, a mensagem volta para a exchange principal `relay.events`. O header `x-original-routing-key` preserva a routing key original do evento para que o worker correto resolva o handler mesmo quando a mensagem retorna a partir de uma fila de retry.
 
 Diferença entre retry e DLQ:
 
@@ -97,13 +97,47 @@ Diferença entre retry e DLQ:
 
 ## Workers
 
-O Docker Compose ainda executa um worker único para manter a operação simples nesta etapa. Internamente, o código já separa handlers por domínio:
+O Docker Compose executa consumers independentes por domínio. Todos usam o mesmo código base de consumo resiliente, mas cada processo consome uma fila específica e aplica seu próprio conjunto de routing keys aceitas.
+
+Workers:
+
+- `relay-audit-worker`: consome `relay.events.audit` e processa `events.*` e `audit.*`.
+- `relay-analytics-worker`: consome `relay.events.analytics` e processa `analytics.*`.
+- `relay-notification-worker`: consome `relay.events.notifications` e processa `notifications.*`.
+
+Entry points:
+
+- `python -m app.workers.audit_consumer`
+- `python -m app.workers.analytics_consumer`
+- `python -m app.workers.notification_consumer`
+
+Cada serviço recebe:
+
+- `WORKER_NAME`: nome lógico do worker.
+- `WORKER_QUEUE`: fila consumida pelo processo.
+- `WORKER_ROUTING_KEY`: padrões de routing key aceitos pelo worker.
+
+Os handlers continuam separados por domínio:
 
 - `audit_worker`
 - `analytics_worker`
 - `notification_worker`
 
-Essa separação permite evoluir para processos independentes por fila sem reescrever a lógica de roteamento.
+A API atua como producer: recebe o evento, persiste no PostgreSQL e publica na exchange `relay.events`. Os consumers são os workers: leem mensagens das filas, executam o handler de domínio, registram tentativas e aplicam retry ou DLQ quando necessário.
+
+Para escalar um domínio específico com Docker Compose:
+
+```bash
+docker compose up --scale relay-analytics-worker=3
+```
+
+Também é possível escalar audit e notification separadamente:
+
+```bash
+docker compose up --scale relay-audit-worker=2 --scale relay-notification-worker=2
+```
+
+As mensagens liberadas pelas filas de retry usam `retry.*` para voltar à exchange principal. Como as filas de retry são compartilhadas, os workers verificam `x-original-routing-key` antes de processar; apenas o worker compatível com a routing key original executa o handler.
 
 ## Status de Evento
 
@@ -239,7 +273,6 @@ Para execução sem Docker, ajuste `DATABASE_URL`, `RABBITMQ_*` e `REDIS_URL` co
 ## Roadmap Técnico
 
 - Criar política de reprocessamento manual para eventos em DLQ.
-- Separar workers por processo e fila.
 - Adicionar autenticação e autorização.
 - Adicionar filtros, paginação e detalhes de eventos no frontend.
 - Expor métricas Prometheus no backend e nos workers.
