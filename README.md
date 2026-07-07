@@ -295,7 +295,7 @@ Painéis do broker:
 RabbitMQ Exporter:
 
 - Serviço Docker Compose: `rabbitmq-exporter`
-- Imagem: `kbudde/rabbitmq-exporter:v1.0.0`
+- Imagem: `kbudde/rabbitmq-exporter:1.0.0`
 - URL interna do RabbitMQ: `http://rabbitmq:15672`
 - Endpoint de métricas local: http://localhost:9419/metrics
 - Job Prometheus: `rabbitmq-exporter`
@@ -319,12 +319,58 @@ rabbitmq_node_mem_used
 
 Para verificar DLQ e retry queues pelo Grafana, abra o dashboard `Relay RabbitMQ` e acompanhe os painéis `Mensagens em DLQ`, `Mensagens em retry queues`, `Mensagens prontas por fila` e `Mensagens não confirmadas por fila`.
 
+### Alertas Operacionais
+
+O Prometheus carrega regras versionadas a partir de `infra/prometheus/rules/relay-alerts.yml`. Nesta etapa, os alertas ficam visíveis no Prometheus e no dashboard `Relay Alerts` do Grafana. Não há Alertmanager nem canais reais de notificação externa configurados.
+
+Dashboard de alertas:
+
+- Arquivo: `infra/grafana/dashboards/relay-alerts.json`
+- Nome no Grafana: `Relay Alerts`
+- Pasta: `Relay`
+
+Alertas de aplicação:
+
+- `RelayDeadLetterQueueHasEvents` (`warning`): existe pelo menos um evento em DLQ por mais de 5 minutos.
+- `RelayDeadLetterQueueGrowing` (`critical`): a quantidade de eventos em DLQ aumentou nos últimos 10 minutos.
+- `RelayOldDeadLetterEvent` (`warning`): o evento mais antigo na DLQ passou de 30 minutos.
+- `RelayHighRetryRate` (`warning`): workers estão enviando muitos eventos para retry.
+- `RelayHighWorkerFailureRate` (`warning`): workers estão falhando eventos em taxa elevada.
+- `RelayEventPublishFailures` (`critical`): a API falhou ao publicar eventos no RabbitMQ.
+
+Alertas de RabbitMQ e scrape:
+
+- `RelayQueueWithoutConsumers` (`critical`): fila principal sem consumidores.
+- `RelayQueueBacklogGrowing` (`warning`): mensagens prontas crescendo em filas principais.
+- `RelayHighUnackedMessages` (`warning`): mensagens não confirmadas acima do limite.
+- `RelayRetryQueueBacklog` (`warning`): filas de retry acumulando mensagens.
+- `RelayRabbitMQExporterDown` (`critical`): Prometheus não consegue coletar o RabbitMQ Exporter.
+- `RelayBackendMetricsDown` (`critical`): Prometheus não consegue coletar `/metrics` do backend.
+
+Métricas usadas:
+
+- Gauges do Relay: `relay_dead_letter_events_total`, `relay_dead_letter_oldest_event_age_seconds`.
+- Counters do Relay: `relay_worker_events_retried_total`, `relay_worker_events_failed_total`, `relay_event_publish_failures_total`.
+- Gauges do RabbitMQ Exporter: `rabbitmq_queue_consumers`, `rabbitmq_queue_messages_ready`, `rabbitmq_queue_messages_unacknowledged`, `rabbitmq_queue_messages`.
+- Métrica nativa do Prometheus: `up`.
+
+Validação das regras:
+
+```bash
+docker compose run --rm --entrypoint promtool prometheus check rules /etc/prometheus/rules/relay-alerts.yml
+```
+
+Também é possível acompanhar os alertas em:
+
+- Prometheus: http://localhost:9090/alerts
+- Grafana: dashboard `Relay Alerts`
+
 Limitação atual: o Prometheus coleta o endpoint `/metrics` do backend. As métricas instrumentadas diretamente nos processos de worker existem no código, mas ainda não há endpoint Prometheus separado por worker nem agregador multiprocess. Por isso, os painéis de worker ficam prontos para uso completo quando essa exposição for adicionada. As métricas derivadas do PostgreSQL, como status e DLQ, já aparecem pelo scrape do backend.
 
 Próximos passos de observabilidade:
 
 - Expor métricas por worker ou usar um modelo multiprocess/Pushgateway.
-- Criar alertas Grafana para DLQ crescente, retries altos e falhas de publicação.
+- Configurar Alertmanager e canais reais de notificação.
 - Versionar dashboards adicionais para RabbitMQ e infraestrutura.
 
 ## Estrutura
@@ -451,6 +497,6 @@ Para execução sem Docker, ajuste `DATABASE_URL`, `RABBITMQ_*` e `REDIS_URL` co
 - Adicionar filtros, paginação e detalhes de eventos no frontend.
 - Expor métricas Prometheus no backend e nos workers.
 - Adicionar logs estruturados com correlação por `correlation_id` e `trace_id`.
-- Adicionar RabbitMQ Exporter e alertas no Grafana.
+- Configurar Alertmanager e notificações reais.
 - Integrar Loki.
 - Criar pipeline de CI com lint, testes e build de imagens.

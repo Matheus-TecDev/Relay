@@ -203,12 +203,13 @@ services:
       - rabbitmq-exporter
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
 
   rabbitmq-exporter:
-    image: kbudde/rabbitmq-exporter:v1.0.0
+    image: kbudde/rabbitmq-exporter:1.0.0
     environment:
       RABBIT_URL: http://rabbitmq:15672
       RABBIT_USER: ${RABBITMQ_DEFAULT_USER:-relay}

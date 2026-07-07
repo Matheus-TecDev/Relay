@@ -1,0 +1,124 @@
+groups:
+  - name: relay-application-alerts
+    rules:
+      - alert: RelayDeadLetterQueueHasEvents
+        expr: max_over_time(relay_dead_letter_events_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: relay
+        annotations:
+          summary: Relay has events in DLQ
+          description: The operational DLQ has contained at least one event for more than 5 minutes.
+
+      - alert: RelayDeadLetterQueueGrowing
+        expr: max_over_time(relay_dead_letter_events_total[10m]) - min_over_time(relay_dead_letter_events_total[10m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: relay
+        annotations:
+          summary: Relay DLQ is growing
+          description: The number of events in the operational DLQ increased during the last 10 minutes.
+
+      - alert: RelayOldDeadLetterEvent
+        expr: max_over_time(relay_dead_letter_oldest_event_age_seconds[5m]) > 1800
+        for: 5m
+        labels:
+          severity: warning
+          service: relay
+        annotations:
+          summary: Relay has an old DLQ event
+          description: The oldest event in DLQ has been waiting for more than 30 minutes.
+
+      - alert: RelayHighRetryRate
+        expr: sum(rate(relay_worker_events_retried_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: relay-workers
+        annotations:
+          summary: Relay retry rate is high
+          description: Workers are sending more than 0.1 events per second to retry queues over 5 minutes.
+
+      - alert: RelayHighWorkerFailureRate
+        expr: sum(rate(relay_worker_events_failed_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: relay-workers
+        annotations:
+          summary: Relay worker failure rate is high
+          description: Workers are failing more than 0.05 events per second over 5 minutes.
+
+      - alert: RelayEventPublishFailures
+        expr: increase(relay_event_publish_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: relay-api
+        annotations:
+          summary: Relay failed to publish events to RabbitMQ
+          description: At least one event publish failure occurred in the last 5 minutes.
+
+  - name: relay-rabbitmq-alerts
+    rules:
+      - alert: RelayQueueWithoutConsumers
+        expr: max_over_time(rabbitmq_queue_consumers{queue=~"relay\\.events\\.(audit|analytics|notifications)"}[3m]) == 0
+        for: 3m
+        labels:
+          severity: critical
+          service: rabbitmq
+        annotations:
+          summary: Relay queue has no consumers
+          description: Queue {{ $labels.queue }} has had zero consumers for more than 3 minutes.
+
+      - alert: RelayQueueBacklogGrowing
+        expr: max_over_time(rabbitmq_queue_messages_ready{queue=~"relay\\.events\\.(audit|analytics|notifications)"}[10m]) - min_over_time(rabbitmq_queue_messages_ready{queue=~"relay\\.events\\.(audit|analytics|notifications)"}[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: rabbitmq
+        annotations:
+          summary: Relay queue backlog is growing
+          description: Queue {{ $labels.queue }} ready message backlog increased by more than 10 messages in 10 minutes.
+
+      - alert: RelayHighUnackedMessages
+        expr: min_over_time(rabbitmq_queue_messages_unacknowledged{queue=~"relay\\.events\\.(audit|analytics|notifications)"}[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+          service: rabbitmq
+        annotations:
+          summary: Relay queue has high unacknowledged messages
+          description: Queue {{ $labels.queue }} has had more than 50 unacknowledged messages for more than 5 minutes.
+
+      - alert: RelayRetryQueueBacklog
+        expr: min_over_time(rabbitmq_queue_messages{queue=~"relay\\.events\\.retry\\..*"}[10m]) > 20
+        for: 10m
+        labels:
+          severity: warning
+          service: rabbitmq
+        annotations:
+          summary: Relay retry queue backlog is high
+          description: Retry queue {{ $labels.queue }} has had more than 20 messages for more than 10 minutes.
+
+      - alert: RelayRabbitMQExporterDown
+        expr: max_over_time(up{job="rabbitmq-exporter"}[2m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: rabbitmq-exporter
+        annotations:
+          summary: RabbitMQ Exporter is down
+          description: Prometheus has not been able to scrape rabbitmq-exporter for more than 2 minutes.
+
+      - alert: RelayBackendMetricsDown
+        expr: max_over_time(up{job="relay-backend"}[2m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: relay-api
+        annotations:
+          summary: Relay backend metrics are down
+          description: Prometheus has not been able to scrape the Relay backend /metrics endpoint for more than 2 minutes.
