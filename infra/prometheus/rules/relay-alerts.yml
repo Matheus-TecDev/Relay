@@ -122,3 +122,85 @@ groups:
         annotations:
           summary: Relay backend metrics are down
           description: Prometheus has not been able to scrape the Relay backend /metrics endpoint for more than 2 minutes.
+
+  - name: relay-outbox-idempotency-alerts
+    rules:
+      - alert: RelayOutboxPendingTooLong
+        expr: max_over_time(relay_outbox_oldest_pending_age_seconds[5m]) > 300
+        for: 5m
+        labels:
+          severity: warning
+          service: relay-outbox-publisher
+        annotations:
+          summary: Relay outbox has old pending messages
+          description: The oldest pending or failed outbox message has been waiting for more than 5 minutes.
+
+      - alert: RelayOutboxPublishFailures
+        expr: sum(increase(relay_outbox_publish_failures_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: relay-outbox-publisher
+        annotations:
+          summary: Relay outbox failed to publish messages
+          description: At least one outbox publication failed in the last 5 minutes.
+
+      - alert: RelayOutboxHighRetryRate
+        expr: sum(rate(relay_outbox_retries_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: relay-outbox-publisher
+        annotations:
+          summary: Relay outbox retry rate is high
+          description: The outbox publisher is scheduling more than 0.05 retries per second over 5 minutes.
+
+      - alert: RelayOutboxStuckPublishing
+        expr: max_over_time(relay_outbox_messages_stuck_publishing_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: relay-outbox-publisher
+        annotations:
+          summary: Relay outbox has messages stuck in publishing
+          description: At least one outbox message has remained in publishing longer than the configured timeout.
+
+      - alert: RelayDuplicateEventsSkipped
+        expr: sum(increase(relay_worker_events_duplicate_skipped_total[10m])) > 0
+        for: 1m
+        labels:
+          severity: info
+          service: relay-workers
+        annotations:
+          summary: Relay skipped duplicated events
+          description: Workers skipped duplicated or already terminal events in the last 10 minutes.
+
+      - alert: RelayIdempotencyLockFailures
+        expr: sum(increase(relay_idempotency_lock_failures_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: relay-workers
+        annotations:
+          summary: Relay idempotency lock failures detected
+          description: Workers failed to acquire idempotency locks in the last 5 minutes.
+
+      - alert: RelayStaleProcessingEvents
+        expr: max_over_time(relay_idempotency_stale_processing_events_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: relay-workers
+        annotations:
+          summary: Relay has events stuck in processing
+          description: At least one event has remained in idempotency processing longer than the configured timeout.
+
+      - alert: RelayOutboxPublisherDown
+        expr: max_over_time(up{job="relay-outbox-publisher"}[2m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: relay-outbox-publisher
+        annotations:
+          summary: Relay outbox publisher metrics are down
+          description: Prometheus has not been able to scrape the relay-outbox-publisher metrics endpoint for more than 2 minutes.

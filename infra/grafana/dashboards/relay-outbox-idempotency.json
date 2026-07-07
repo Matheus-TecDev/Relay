@@ -49,8 +49,8 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 8,
+        "h": 5,
+        "w": 6,
         "x": 0,
         "y": 0
       },
@@ -76,77 +76,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(ALERTS{alertstate=\"firing\", alertname=~\"Relay.*\"})",
-          "legendFormat": "active alerts",
+          "expr": "relay_outbox_messages_pending_total",
+          "legendFormat": "pending",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Alertas ativos",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum(ALERTS{alertstate=\"firing\", alertname=~\"Relay.*\", severity=\"critical\"})",
-          "legendFormat": "critical",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Critical ativos",
+      "title": "Outbox pending",
       "type": "stat"
     },
     {
@@ -177,9 +113,73 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "relay_outbox_messages_failed_total",
+          "legendFormat": "failed",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox failed",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
         "y": 0
       },
       "id": 3,
@@ -204,68 +204,14 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(ALERTS{alertstate=\"firing\", alertname=~\"Relay.*\", severity=\"warning\"})",
-          "legendFormat": "warning",
+          "expr": "relay_outbox_messages_stuck_publishing_total",
+          "legendFormat": "stuck",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Warning ativos",
+      "title": "Stuck publishing",
       "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 12,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 6
-      },
-      "id": 4,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum(ALERTS{alertname=~\"Relay.*\"}) by (alertname, severity, alertstate)",
-          "legendFormat": "{{alertname}} {{severity}} {{alertstate}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Alertas por nome e estado",
-      "type": "timeseries"
     },
     {
       "datasource": {
@@ -295,27 +241,17 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 6
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
       },
-      "id": 5,
+      "id": 4,
       "options": {
-        "displayMode": "gradient",
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "maxVizHeight": 300,
-        "minVizHeight": 16,
-        "minVizWidth": 8,
-        "namePlacement": "auto",
-        "orientation": "horizontal",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -323,8 +259,7 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true,
-        "valueMode": "color"
+        "textMode": "auto"
       },
       "targets": [
         {
@@ -333,65 +268,14 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "up{job=~\"relay-backend|rabbitmq-exporter|relay-outbox-publisher|relay-workers\"}",
+          "expr": "up{job=\"relay-outbox-publisher\"}",
           "legendFormat": "{{job}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Saúde dos scrape jobs",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 14
-      },
-      "id": 6,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "ALERTS{alertname=~\"Relay.*\"}",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Estado atual das regras Relay",
-      "type": "table"
+      "title": "Outbox publisher health",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -405,7 +289,7 @@
           },
           "custom": {
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 12,
             "lineWidth": 2,
             "showPoints": "never"
           },
@@ -414,10 +298,118 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
+        "h": 8,
         "w": 12,
         "x": 0,
-        "y": 22
+        "y": 5
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(relay_outbox_messages_published_total[5m])) by (routing_key)",
+          "legendFormat": "{{routing_key}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Published outbox rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(relay_outbox_retries_total[5m])) by (routing_key, attempt_count)",
+          "legendFormat": "{{routing_key}} attempt {{attempt_count}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox retries rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
       },
       "id": 7,
       "options": {
@@ -438,13 +430,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(ALERTS{alertname=~\"RelayOutbox.*\", alertstate=\"firing\"}) by (alertname, severity)",
-          "legendFormat": "{{alertname}} {{severity}}",
+          "expr": "sum(rate(relay_worker_events_duplicate_skipped_total[5m])) by (worker_name, reason)",
+          "legendFormat": "{{worker_name}} {{reason}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Alertas de Outbox ativos",
+      "title": "Duplicate skipped rate",
       "type": "timeseries"
     },
     {
@@ -459,7 +451,7 @@
           },
           "custom": {
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 12,
             "lineWidth": 2,
             "showPoints": "never"
           },
@@ -468,10 +460,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
+        "h": 8,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 13
       },
       "id": 8,
       "options": {
@@ -492,13 +484,185 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(ALERTS{alertname=~\"Relay(DuplicateEventsSkipped|IdempotencyLockFailures|StaleProcessingEvents)\", alertstate=\"firing\"}) by (alertname, severity)",
-          "legendFormat": "{{alertname}} {{severity}}",
+          "expr": "sum(rate(relay_idempotency_lock_failures_total[5m])) by (worker_name, reason)",
+          "legendFormat": "{{worker_name}} {{reason}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Alertas de Idempotencia ativos",
+      "title": "Idempotency lock failures rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 21
+      },
+      "id": 9,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "relay_idempotency_stale_processing_events_total",
+          "legendFormat": "stale processing",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Stale processing events",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 21
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "relay_outbox_oldest_pending_age_seconds",
+          "legendFormat": "oldest pending age",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Oldest pending outbox age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 21
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(relay_outbox_publish_failures_total[5m])) by (routing_key)",
+          "legendFormat": "{{routing_key}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox publish failure rate",
       "type": "timeseries"
     }
   ],
@@ -506,7 +670,8 @@
   "schemaVersion": 40,
   "tags": [
     "relay",
-    "alerts",
+    "outbox",
+    "idempotency",
     "prometheus"
   ],
   "templating": {
@@ -518,8 +683,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Relay Alerts",
-  "uid": "relay-alerts",
+  "title": "Relay Outbox & Idempotency",
+  "uid": "relay-outbox-idempotency",
   "version": 1,
   "weekStart": ""
 }

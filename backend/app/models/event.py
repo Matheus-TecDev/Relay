@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from app.models.dead_letter_event import DeadLetterEvent
     from app.models.event_attempt import EventAttempt
     from app.models.event_log import EventLog
+    from app.models.event_processing_state import EventProcessingState
+    from app.models.outbox_message import OutboxMessage
 
 
 class Event(Base):
@@ -43,4 +45,14 @@ class Event(Base):
     dead_letter_entries: Mapped[List["DeadLetterEvent"]] = relationship(
         back_populates="event",
         cascade="all, delete-orphan",
+    )
+    processing_state: Mapped["EventProcessingState"] = relationship(
+        back_populates="event",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    outbox_message: Mapped["OutboxMessage"] = relationship(
+        back_populates="event",
+        cascade="all, delete-orphan",
+        uselist=False,
     )

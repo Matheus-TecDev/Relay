@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.dead_letter_events import router as dead_letter_events_router
@@ -6,12 +6,26 @@ from app.api.routes.events import router as events_router
 from app.api.routes.health import router as health_router
 from app.api.routes.metrics import router as metrics_router
 from app.core.config import settings
-from app.observability.logging import configure_logging
+from app.observability.logging import clear_log_context, configure_logging, set_log_context
+from app.observability.tracing import configure_tracing, instrument_fastapi
 
 
 def create_app() -> FastAPI:
-    configure_logging()
+    configure_logging(settings.otel_service_name)
+    configure_tracing(settings.otel_service_name)
     app = FastAPI(title=settings.project_name)
+    instrument_fastapi(app)
+
+    @app.middleware("http")
+    async def logging_context_middleware(request: Request, call_next):
+        set_log_context(
+            correlation_id=request.headers.get("x-correlation-id"),
+            endpoint=request.url.path,
+        )
+        try:
+            return await call_next(request)
+        finally:
+            clear_log_context()
 
     app.add_middleware(
         CORSMiddleware,

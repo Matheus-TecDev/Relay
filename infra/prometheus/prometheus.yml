@@ -5,12 +5,32 @@ global:
 rule_files:
   - /etc/prometheus/rules/relay-alerts.yml
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
 scrape_configs:
   - job_name: relay-backend
     metrics_path: /metrics
     static_configs:
       - targets:
           - backend:8000
+
+  - job_name: relay-outbox-publisher
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - relay-outbox-publisher:9101
+
+  - job_name: relay-workers
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - relay-audit-worker:9102
+          - relay-analytics-worker:9102
+          - relay-notification-worker:9102
 
   - job_name: rabbitmq-exporter
     metrics_path: /metrics

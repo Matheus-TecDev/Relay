@@ -31,9 +31,25 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379/0"
 
+    idempotency_processing_timeout_seconds: int = 900
+    outbox_publisher_name: str = "relay-outbox-publisher"
+    outbox_batch_size: int = 10
+    outbox_poll_interval_seconds: float = 2.0
+    outbox_publishing_timeout_seconds: int = 300
+    outbox_backoff_seconds: str = "5,30,120,300"
+    outbox_metrics_port: int = 9101
+
+    otel_enabled: bool = True
+    otel_service_name: str = "relay-backend"
+    otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+    otel_exporter_otlp_insecure: bool = True
+    otel_traces_sampler: str = "always_on"
+    otel_resource_attributes: str = "service.namespace=relay,deployment.environment=development"
+
     worker_name: str = "relay-audit-worker"
     worker_queue: str = "relay.events.audit"
     worker_routing_key: str = "events.*,audit.*"
+    worker_metrics_port: int = 9102
 
     backend_cors_origins: str = Field(
         default="http://localhost,http://localhost:5173,http://127.0.0.1:5173"

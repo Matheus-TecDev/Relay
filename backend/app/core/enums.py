@@ -16,3 +16,17 @@ class EventLogLevel(StrEnum):
     WARNING = "warning"
     ERROR = "error"
 
+
+class EventProcessingStatus(StrEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    PROCESSED = "processed"
+    FAILED = "failed"
+    DEAD_LETTERED = "dead_lettered"
+
+
+class OutboxStatus(StrEnum):
+    PENDING = "pending"
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    FAILED = "failed"

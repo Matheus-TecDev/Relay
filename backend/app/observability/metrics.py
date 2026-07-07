@@ -4,9 +4,12 @@ from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.dead_letter_event import DeadLetterEvent
 from app.models.event import Event
 from app.models.event_attempt import EventAttempt
+from app.models.event_processing_state import EventProcessingState
+from app.models.outbox_message import OutboxMessage
 
 EVENTS_CREATED = Counter(
     "relay_events_created_total",
@@ -89,6 +92,51 @@ EVENT_ATTEMPTS_BY_STATUS_CURRENT = Gauge(
     "Current number of event attempts by status.",
     ("status",),
 )
+WORKER_EVENTS_DUPLICATE_SKIPPED = Counter(
+    "relay_worker_events_duplicate_skipped_total",
+    "Total worker messages skipped because the event was already processed or already terminal.",
+    ("worker_name", "routing_key", "reason"),
+)
+IDEMPOTENCY_LOCK_FAILURES = Counter(
+    "relay_idempotency_lock_failures_total",
+    "Total idempotency lock acquisition failures.",
+    ("worker_name", "routing_key", "reason"),
+)
+IDEMPOTENCY_STALE_PROCESSING_EVENTS = Gauge(
+    "relay_idempotency_stale_processing_events_total",
+    "Current number of events stuck in processing longer than the configured timeout.",
+)
+OUTBOX_MESSAGES_PENDING = Gauge(
+    "relay_outbox_messages_pending_total",
+    "Current number of outbox messages waiting for publication.",
+)
+OUTBOX_MESSAGES_FAILED = Gauge(
+    "relay_outbox_messages_failed_total",
+    "Current number of outbox messages waiting for retry after a failed publication.",
+)
+OUTBOX_MESSAGES_STUCK_PUBLISHING = Gauge(
+    "relay_outbox_messages_stuck_publishing_total",
+    "Current number of outbox messages stuck in publishing longer than the configured timeout.",
+)
+OUTBOX_OLDEST_PENDING_AGE = Gauge(
+    "relay_outbox_oldest_pending_age_seconds",
+    "Approximate age in seconds of the oldest pending or failed outbox message ready for publication.",
+)
+OUTBOX_MESSAGES_PUBLISHED = Counter(
+    "relay_outbox_messages_published_total",
+    "Total outbox messages published to RabbitMQ.",
+    ("routing_key",),
+)
+OUTBOX_PUBLISH_FAILURES = Counter(
+    "relay_outbox_publish_failures_total",
+    "Total outbox publication failures.",
+    ("routing_key",),
+)
+OUTBOX_RETRIES = Counter(
+    "relay_outbox_retries_total",
+    "Total outbox retries scheduled after failed publication.",
+    ("routing_key", "attempt_count"),
+)
 
 
 def record_event_created(event_type: str, routing_key: str) -> None:
@@ -164,6 +212,42 @@ def record_event_dead_lettered(routing_key: str, worker_name: str = "unknown") -
     ).inc()
 
 
+def record_event_duplicate_skipped(
+    routing_key: str,
+    reason: str,
+    worker_name: str = "unknown",
+) -> None:
+    WORKER_EVENTS_DUPLICATE_SKIPPED.labels(
+        worker_name=worker_name,
+        routing_key=routing_key,
+        reason=reason,
+    ).inc()
+
+
+def record_idempotency_lock_failure(
+    routing_key: str,
+    reason: str,
+    worker_name: str = "unknown",
+) -> None:
+    IDEMPOTENCY_LOCK_FAILURES.labels(
+        worker_name=worker_name,
+        routing_key=routing_key,
+        reason=reason,
+    ).inc()
+
+
+def record_outbox_message_published(routing_key: str) -> None:
+    OUTBOX_MESSAGES_PUBLISHED.labels(routing_key=routing_key).inc()
+
+
+def record_outbox_publish_failed(routing_key: str) -> None:
+    OUTBOX_PUBLISH_FAILURES.labels(routing_key=routing_key).inc()
+
+
+def record_outbox_retry(routing_key: str, attempt_count: int) -> None:
+    OUTBOX_RETRIES.labels(routing_key=routing_key, attempt_count=str(attempt_count)).inc()
+
+
 def observe_event_processing_duration(
     event_type: str,
     routing_key: str,
@@ -191,6 +275,8 @@ def refresh_database_metrics(db: Session) -> None:
     _refresh_event_status_metrics(db)
     _refresh_attempt_status_metrics(db)
     _refresh_dead_letter_metrics(db)
+    _refresh_idempotency_metrics(db)
+    _refresh_outbox_metrics(db)
 
 
 def _refresh_event_status_metrics(db: Session) -> None:
@@ -217,3 +303,50 @@ def _refresh_dead_letter_metrics(db: Session) -> None:
     if oldest_created_at.tzinfo is None:
         oldest_created_at = oldest_created_at.replace(tzinfo=UTC)
     DEAD_LETTER_OLDEST_AGE.set(max((datetime.now(UTC) - oldest_created_at).total_seconds(), 0))
+
+
+def _refresh_idempotency_metrics(db: Session) -> None:
+    cutoff = datetime.now(UTC).timestamp() - settings.idempotency_processing_timeout_seconds
+    stale_count = 0
+    for processing_started_at, in db.execute(
+        select(EventProcessingState.processing_started_at).where(EventProcessingState.status == "processing")
+    ):
+        if processing_started_at is None:
+            continue
+        if processing_started_at.tzinfo is None:
+            processing_started_at = processing_started_at.replace(tzinfo=UTC)
+        if processing_started_at.timestamp() < cutoff:
+            stale_count += 1
+
+    IDEMPOTENCY_STALE_PROCESSING_EVENTS.set(stale_count)
+
+
+def _refresh_outbox_metrics(db: Session) -> None:
+    pending_count = db.scalar(select(func.count(OutboxMessage.id)).where(OutboxMessage.status == "pending")) or 0
+    OUTBOX_MESSAGES_PENDING.set(pending_count)
+
+    failed_count = db.scalar(select(func.count(OutboxMessage.id)).where(OutboxMessage.status == "failed")) or 0
+    OUTBOX_MESSAGES_FAILED.set(failed_count)
+
+    now = datetime.now(UTC)
+    oldest_ready_at = db.scalar(
+        select(func.min(OutboxMessage.created_at)).where(OutboxMessage.status.in_(["pending", "failed"]))
+    )
+    if oldest_ready_at is None:
+        OUTBOX_OLDEST_PENDING_AGE.set(0)
+    else:
+        if oldest_ready_at.tzinfo is None:
+            oldest_ready_at = oldest_ready_at.replace(tzinfo=UTC)
+        OUTBOX_OLDEST_PENDING_AGE.set(max((now - oldest_ready_at).total_seconds(), 0))
+
+    cutoff = datetime.now(UTC).timestamp() - settings.outbox_publishing_timeout_seconds
+    stuck_count = 0
+    for locked_at, in db.execute(select(OutboxMessage.locked_at).where(OutboxMessage.status == "publishing")):
+        if locked_at is None:
+            continue
+        if locked_at.tzinfo is None:
+            locked_at = locked_at.replace(tzinfo=UTC)
+        if locked_at.timestamp() < cutoff:
+            stuck_count += 1
+
+    OUTBOX_MESSAGES_STUCK_PUBLISHING.set(stuck_count)

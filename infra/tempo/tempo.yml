@@ -1,0 +1,53 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  http_server_read_timeout: 30s
+  http_server_write_timeout: 30s
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+
+query_frontend:
+  metrics:
+    max_duration: 24h
+    query_backend_after: 5m
+    concurrent_jobs: 4
+    target_bytes_per_job: 104857600
+
+metrics_generator:
+  processor:
+    local_blocks:
+      flush_to_storage: true
+    service_graphs: {}
+    span_metrics: {}
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/traces
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [local-blocks, service-graphs, span-metrics]

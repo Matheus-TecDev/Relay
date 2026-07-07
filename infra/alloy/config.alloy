@@ -1,0 +1,81 @@
+discovery.docker "relay" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+discovery.relabel "relay" {
+  targets = discovery.docker.relay.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "relay"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(backend|relay-outbox-publisher|relay-audit-worker|relay-analytics-worker|relay-notification-worker|postgres|rabbitmq|redis|frontend|nginx|prometheus|rabbitmq-exporter|tempo|otel-collector|grafana|loki|alloy)"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    target_label = "environment"
+    replacement  = "development"
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "relay/docker"
+  }
+}
+
+loki.source.docker "relay" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.docker.relay.targets
+  relabel_rules    = discovery.relabel.relay.rules
+  refresh_interval = "5s"
+  forward_to       = [loki.process.relay.receiver]
+}
+
+loki.process "relay" {
+  stage.json {
+    expressions = {
+      "timestamp"      = "timestamp",
+      "level"          = "level",
+      "service_json"   = "service",
+      "environment"    = "environment",
+      "trace_id"       = "trace_id",
+      "span_id"        = "span_id",
+      "correlation_id" = "correlation_id",
+      "event_id"       = "event_id",
+      "endpoint"       = "endpoint",
+      "message"        = "message",
+    }
+  }
+
+  stage.labels {
+    values = {
+      "level"       = "level",
+      "environment" = "environment",
+    }
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

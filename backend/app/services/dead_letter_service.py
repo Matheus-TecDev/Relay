@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import desc, select
@@ -12,6 +13,8 @@ from app.observability.metrics import (
     record_dead_letter_reprocess_failed,
 )
 from app.queues.rabbitmq import publish_event
+
+logger = logging.getLogger(__name__)
 
 
 class DeadLetterEventNotFoundError(Exception):
@@ -79,6 +82,16 @@ class DeadLetterService:
             publish_event(message, routing_key)
         except Exception as exc:
             record_dead_letter_reprocess_failed(routing_key, "publish_failed")
+            logger.exception(
+                "Manual DLQ reprocess publish failed",
+                extra={
+                    "event_id": event.id,
+                    "dead_letter_event_id": dead_letter_event.id,
+                    "routing_key": routing_key,
+                    "correlation_id": event.correlation_id,
+                    "trace_id": event.trace_id,
+                },
+            )
             self._log(
                 event.id,
                 EventLogLevel.ERROR,
@@ -99,6 +112,16 @@ class DeadLetterService:
             EventLogLevel.INFO,
             "Manual DLQ reprocess requested",
             {
+                "dead_letter_event_id": dead_letter_event.id,
+                "routing_key": routing_key,
+                "correlation_id": event.correlation_id,
+                "trace_id": event.trace_id,
+            },
+        )
+        logger.info(
+            "Manual DLQ reprocess requested",
+            extra={
+                "event_id": event.id,
                 "dead_letter_event_id": dead_letter_event.id,
                 "routing_key": routing_key,
                 "correlation_id": event.correlation_id,

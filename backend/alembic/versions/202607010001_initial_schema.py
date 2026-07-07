@@ -65,6 +65,66 @@ def upgrade() -> None:
     op.create_index("ix_event_attempts_event_id", "event_attempts", ["event_id"], unique=False)
 
     op.create_table(
+        "event_processing_states",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("event_id", sa.String(length=36), nullable=False),
+        sa.Column("status", sa.String(length=30), nullable=False),
+        sa.Column("worker_name", sa.String(length=120), nullable=True),
+        sa.Column("routing_key", sa.String(length=120), nullable=True),
+        sa.Column("attempt_count", sa.Integer(), nullable=False),
+        sa.Column("processing_started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("failed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("dead_lettered_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("error_message", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("event_id"),
+    )
+    op.create_index(
+        "ix_event_processing_states_processing_started_at",
+        "event_processing_states",
+        ["processing_started_at"],
+        unique=False,
+    )
+    op.create_index("ix_event_processing_states_status", "event_processing_states", ["status"], unique=False)
+    op.create_index(
+        "ix_event_processing_states_worker_name",
+        "event_processing_states",
+        ["worker_name"],
+        unique=False,
+    )
+
+    op.create_table(
+        "outbox_messages",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("event_id", sa.String(length=36), nullable=False),
+        sa.Column("exchange", sa.String(length=120), nullable=False),
+        sa.Column("routing_key", sa.String(length=120), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=False),
+        sa.Column("headers", sa.JSON(), nullable=False),
+        sa.Column("status", sa.String(length=30), nullable=False),
+        sa.Column("attempt_count", sa.Integer(), nullable=False),
+        sa.Column("last_error", sa.Text(), nullable=True),
+        sa.Column("last_attempt_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("locked_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("locked_by", sa.String(length=120), nullable=True),
+        sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("event_id"),
+    )
+    op.create_index("ix_outbox_messages_event_id", "outbox_messages", ["event_id"], unique=False)
+    op.create_index("ix_outbox_messages_locked_at", "outbox_messages", ["locked_at"], unique=False)
+    op.create_index("ix_outbox_messages_next_attempt_at", "outbox_messages", ["next_attempt_at"], unique=False)
+    op.create_index("ix_outbox_messages_status", "outbox_messages", ["status"], unique=False)
+
+    op.create_table(
         "event_logs",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("event_id", sa.String(length=36), nullable=False),
@@ -81,6 +141,15 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_event_logs_event_id", table_name="event_logs")
     op.drop_table("event_logs")
+    op.drop_index("ix_outbox_messages_status", table_name="outbox_messages")
+    op.drop_index("ix_outbox_messages_next_attempt_at", table_name="outbox_messages")
+    op.drop_index("ix_outbox_messages_locked_at", table_name="outbox_messages")
+    op.drop_index("ix_outbox_messages_event_id", table_name="outbox_messages")
+    op.drop_table("outbox_messages")
+    op.drop_index("ix_event_processing_states_worker_name", table_name="event_processing_states")
+    op.drop_index("ix_event_processing_states_status", table_name="event_processing_states")
+    op.drop_index("ix_event_processing_states_processing_started_at", table_name="event_processing_states")
+    op.drop_table("event_processing_states")
     op.drop_index("ix_event_attempts_event_id", table_name="event_attempts")
     op.drop_table("event_attempts")
     op.drop_index("ix_dead_letter_events_event_id", table_name="dead_letter_events")

@@ -10,7 +10,7 @@ from app.core.enums import EventStatus
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import DeadLetterEvent, Event
+from app.models import DeadLetterEvent, Event, OutboxMessage
 
 
 @pytest.fixture
@@ -81,18 +81,15 @@ def test_metrics_endpoint_exposes_relay_metrics(client: TestClient, db_session: 
     body = response.text
     assert "relay_dead_letter_events_total" in body
     assert "relay_dead_letter_oldest_event_age_seconds" in body
+    assert "relay_outbox_messages_failed_total" in body
+    assert "relay_outbox_oldest_pending_age_seconds" in body
     assert 'relay_events_by_status{status="dead_letter"} 1.0' in body
 
 
 def test_event_creation_increments_prometheus_metrics(
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
 ) -> None:
-    def fake_publish_event(message: dict, routing_key: str) -> None:
-        del message, routing_key
-
-    monkeypatch.setattr("app.services.event_service.publish_event", fake_publish_event)
-
     response = client.post(
         "/api/events",
         json={
@@ -107,7 +104,8 @@ def test_event_creation_increments_prometheus_metrics(
 
     assert response.status_code == 201
     assert 'relay_events_created_total{event_type="customer.created",routing_key="events.created"}' in metrics_response.text
-    assert 'relay_events_published_total{event_type="customer.created",routing_key="events.created"}' in metrics_response.text
+    assert "relay_outbox_messages_pending_total" in metrics_response.text
+    assert db_session.query(OutboxMessage).count() == 1
 
 
 def test_dead_letter_reprocess_increments_prometheus_metric(

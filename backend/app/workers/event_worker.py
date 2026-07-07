@@ -6,6 +6,7 @@ from time import perf_counter
 from typing import Any, Callable
 
 import pika
+from prometheus_client import start_http_server
 from sqlalchemy import func, select
 
 from app.core.config import settings
@@ -15,20 +16,31 @@ from app.models.event import Event
 from app.models.event_attempt import EventAttempt
 from app.models.event_log import EventLog
 from app.models.dead_letter_event import DeadLetterEvent
-from app.observability.logging import configure_logging
+from app.observability.logging import clear_log_context, configure_logging, set_log_context
 from app.observability.metrics import (
     observe_event_processing_duration,
+    record_event_duplicate_skipped,
     record_event_dead_lettered,
     record_event_failed,
+    record_idempotency_lock_failure,
     record_event_processed,
     record_event_retried,
 )
+from app.observability.tracing import configure_tracing
 from app.queues.rabbitmq import (
     declare_topology,
     publish_dead_letter_event,
     publish_retry_event,
     rabbitmq_channel,
     retry_limit_exceeded,
+)
+from app.services.idempotency_service import (
+    IdempotencyDecision,
+    acquire_processing_state,
+    ensure_pending_processing_state,
+    mark_processing_dead_lettered,
+    mark_processing_failed,
+    mark_processing_processed,
 )
 from app.workers import analytics_worker, audit_worker, notification_worker
 
@@ -99,93 +111,184 @@ def process_event(
     started_at = perf_counter()
     event_id = message["event_id"]
     handler = _resolve_handler(routing_key)
+    set_log_context(
+        correlation_id=message.get("correlation_id"),
+        event_id=event_id,
+    )
 
-    with SessionLocal() as db:
-        event = db.get(Event, event_id)
-        if event is None:
-            logger.warning("Received message for unknown event_id=%s", event_id)
-            return
+    try:
+        with SessionLocal() as db:
+            event = db.get(Event, event_id)
+            if event is None:
+                logger.warning("Received message for unknown event_id=%s", event_id)
+                return
 
-        attempt_number = (
-            db.scalar(select(func.count(EventAttempt.id)).where(EventAttempt.event_id == event_id)) or 0
-        ) + 1
-        attempt = EventAttempt(
-            event_id=event_id,
-            attempt_number=attempt_number,
-            status=EventStatus.PROCESSING.value,
-        )
-        event.status = EventStatus.PROCESSING.value
-        db.add(attempt)
-        db.add(
-            EventLog(
+            idempotency_result = acquire_processing_state(db, event, worker_name, routing_key)
+            if idempotency_result.decision != IdempotencyDecision.ACQUIRED:
+                reason = idempotency_result.decision.value
+                level = (
+                    EventLogLevel.WARNING
+                    if idempotency_result.decision == IdempotencyDecision.ALREADY_PROCESSING
+                    else EventLogLevel.INFO
+                )
+                db.add(
+                    EventLog(
+                        event_id=event_id,
+                        level=level.value,
+                        message="Event skipped by idempotency guard",
+                        log_metadata={
+                            "reason": reason,
+                            "retry_count": retry_count,
+                            "routing_key": routing_key,
+                            "correlation_id": event.correlation_id,
+                            "trace_id": event.trace_id,
+                        },
+                    )
+                )
+                if idempotency_result.decision == IdempotencyDecision.ALREADY_PROCESSING:
+                    record_idempotency_lock_failure(routing_key, reason, worker_name)
+                else:
+                    record_event_duplicate_skipped(routing_key, reason, worker_name)
+                logger.warning(
+                    "Event skipped by idempotency guard",
+                    extra={
+                        "event_id": event_id,
+                        "event_type": event.event_type,
+                        "status": idempotency_result.state.status,
+                        "reason": reason,
+                        "retry_count": retry_count,
+                        "routing_key": routing_key,
+                        "correlation_id": event.correlation_id,
+                        "trace_id": event.trace_id,
+                        "worker_name": worker_name,
+                    },
+                )
+                db.commit()
+                return
+
+            attempt_number = (
+                db.scalar(select(func.count(EventAttempt.id)).where(EventAttempt.event_id == event_id)) or 0
+            ) + 1
+            attempt = EventAttempt(
                 event_id=event_id,
-                level=EventLogLevel.INFO.value,
-                message="Event attempt started",
-                log_metadata={
+                attempt_number=attempt_number,
+                status=EventStatus.PROCESSING.value,
+            )
+            event.status = EventStatus.PROCESSING.value
+            db.add(attempt)
+            db.add(
+                EventLog(
+                    event_id=event_id,
+                    level=EventLogLevel.INFO.value,
+                    message="Event attempt started",
+                    log_metadata={
+                        "attempt_number": attempt_number,
+                        "retry_count": retry_count,
+                        "routing_key": routing_key,
+                        "correlation_id": event.correlation_id,
+                        "trace_id": event.trace_id,
+                    },
+                )
+            )
+            db.commit()
+            logger.info(
+                "Event attempt started",
+                extra={
+                    "event_id": event_id,
+                    "event_type": event.event_type,
                     "attempt_number": attempt_number,
                     "retry_count": retry_count,
                     "routing_key": routing_key,
                     "correlation_id": event.correlation_id,
                     "trace_id": event.trace_id,
+                    "worker_name": worker_name,
                 },
             )
-        )
-        db.commit()
 
-        try:
-            handler(message)
-            attempt.status = EventStatus.PROCESSED.value
-            attempt.finished_at = datetime.now(UTC)
-            event.status = EventStatus.PROCESSED.value
-            db.add(
-                EventLog(
-                    event_id=event_id,
-                    level=EventLogLevel.INFO.value,
-                    message="Event attempt succeeded",
-                    log_metadata={
+            try:
+                handler(message)
+                attempt.status = EventStatus.PROCESSED.value
+                attempt.finished_at = datetime.now(UTC)
+                event.status = EventStatus.PROCESSED.value
+                mark_processing_processed(db, event_id)
+                db.add(
+                    EventLog(
+                        event_id=event_id,
+                        level=EventLogLevel.INFO.value,
+                        message="Event attempt succeeded",
+                        log_metadata={
+                            "attempt_number": attempt_number,
+                            "retry_count": retry_count,
+                            "routing_key": routing_key,
+                        },
+                    )
+                )
+                logger.info(
+                    "Event attempt succeeded",
+                    extra={
+                        "event_id": event_id,
+                        "event_type": event.event_type,
                         "attempt_number": attempt_number,
                         "retry_count": retry_count,
                         "routing_key": routing_key,
+                        "correlation_id": event.correlation_id,
+                        "trace_id": event.trace_id,
+                        "worker_name": worker_name,
                     },
                 )
-            )
-            record_event_processed(event.event_type, routing_key, worker_name)
-            observe_event_processing_duration(
-                event.event_type,
-                routing_key,
-                EventStatus.PROCESSED.value,
-                perf_counter() - started_at,
-                worker_name,
-            )
-            db.commit()
-        except Exception as exc:
-            attempt.status = EventStatus.FAILED.value
-            attempt.error_message = str(exc)
-            attempt.finished_at = datetime.now(UTC)
-            event.status = EventStatus.FAILED.value
-            db.add(
-                EventLog(
-                    event_id=event_id,
-                    level=EventLogLevel.ERROR.value,
-                    message="Event attempt failed",
-                    log_metadata={
+                record_event_processed(event.event_type, routing_key, worker_name)
+                observe_event_processing_duration(
+                    event.event_type,
+                    routing_key,
+                    EventStatus.PROCESSED.value,
+                    perf_counter() - started_at,
+                    worker_name,
+                )
+                db.commit()
+            except Exception as exc:
+                attempt.status = EventStatus.FAILED.value
+                attempt.error_message = str(exc)
+                attempt.finished_at = datetime.now(UTC)
+                event.status = EventStatus.FAILED.value
+                mark_processing_failed(db, event_id, str(exc))
+                db.add(
+                    EventLog(
+                        event_id=event_id,
+                        level=EventLogLevel.ERROR.value,
+                        message="Event attempt failed",
+                        log_metadata={
+                            "attempt_number": attempt_number,
+                            "retry_count": retry_count,
+                            "error": str(exc),
+                            "routing_key": routing_key,
+                        },
+                    )
+                )
+                logger.exception(
+                    "Event attempt failed",
+                    extra={
+                        "event_id": event_id,
+                        "event_type": event.event_type,
                         "attempt_number": attempt_number,
                         "retry_count": retry_count,
-                        "error": str(exc),
                         "routing_key": routing_key,
+                        "correlation_id": event.correlation_id,
+                        "trace_id": event.trace_id,
+                        "worker_name": worker_name,
                     },
                 )
-            )
-            record_event_failed(event.event_type, routing_key, worker_name)
-            observe_event_processing_duration(
-                event.event_type,
-                routing_key,
-                EventStatus.FAILED.value,
-                perf_counter() - started_at,
-                worker_name,
-            )
-            db.commit()
-            raise
+                record_event_failed(event.event_type, routing_key, worker_name)
+                observe_event_processing_duration(
+                    event.event_type,
+                    routing_key,
+                    EventStatus.FAILED.value,
+                    perf_counter() - started_at,
+                    worker_name,
+                )
+                db.commit()
+                raise
+    finally:
+        clear_log_context()
 
 
 def _retry_count_from_headers(headers: dict[str, Any]) -> int:
@@ -231,6 +334,20 @@ def _record_retry(
                 },
             )
         )
+        logger.warning(
+            "Event sent to retry queue",
+            extra={
+                "event_id": event_id,
+                "event_type": event.event_type,
+                "retry_count": retry_count,
+                "retry_queue": retry_queue,
+                "original_routing_key": original_routing_key,
+                "error": error_message,
+                "correlation_id": event.correlation_id,
+                "trace_id": event.trace_id,
+                "worker_name": worker_name,
+            },
+        )
         record_event_retried(original_routing_key, retry_queue, retry_count, worker_name)
         db.commit()
 
@@ -248,7 +365,9 @@ def _mark_event_dead_letter(
         if event is None:
             return
 
+        ensure_pending_processing_state(db, event)
         event.status = EventStatus.DEAD_LETTER.value
+        mark_processing_dead_lettered(db, event_id, error_message)
         db.add(
             DeadLetterEvent(
                 event_id=event_id,
@@ -270,6 +389,19 @@ def _mark_event_dead_letter(
                     "error": error_message,
                 },
             )
+        )
+        logger.error(
+            "Event sent to dead letter queue",
+            extra={
+                "event_id": event_id,
+                "event_type": event.event_type,
+                "retry_count": retry_count,
+                "original_routing_key": original_routing_key,
+                "error": error_message,
+                "correlation_id": event.correlation_id,
+                "trace_id": event.trace_id,
+                "worker_name": worker_name,
+            },
         )
         record_event_dead_lettered(original_routing_key, worker_name)
         db.commit()
@@ -363,14 +495,17 @@ def build_message_handler(
 
 
 def run_worker(worker_config: WorkerConfig | None = None) -> None:
-    configure_logging()
     worker_config = worker_config or build_worker_config()
+    configure_logging(worker_config.name)
+    configure_tracing(worker_config.name)
+    start_http_server(settings.worker_metrics_port)
     logger.info(
-        "Starting Relay worker. name=%s exchange=%s queue=%s routing_keys=%s",
+        "Starting Relay worker. name=%s exchange=%s queue=%s routing_keys=%s metrics_port=%s",
         worker_config.name,
         settings.rabbitmq_exchange,
         worker_config.queue_name,
         ",".join(worker_config.routing_keys),
+        settings.worker_metrics_port,
     )
     with rabbitmq_channel() as channel:
         declare_topology(channel)
