@@ -1,14 +1,12 @@
 # API
 
-A API usa o prefixo configurável `API_V1_PREFIX`, com padrão `/api`.
+The API uses the configurable `API_V1_PREFIX`, which defaults to `/api`.
 
 ## Health
 
 ### `GET /health`
 
-Retorna o status básico da API.
-
-Resposta esperada:
+Returns the API's basic status.
 
 ```json
 {
@@ -16,9 +14,9 @@ Resposta esperada:
 }
 ```
 
-## Autenticação
+## Authentication
 
-As rotas operacionais em `/api/events` e `/api/dead-letter-events` exigem JWT no header:
+Operational routes under `/api/events` and `/api/dead-letter-events` require a JWT:
 
 ```http
 Authorization: Bearer ACCESS_TOKEN
@@ -26,7 +24,7 @@ Authorization: Bearer ACCESS_TOKEN
 
 ### `POST /api/auth/login`
 
-Autentica o usuário administrativo local.
+Authenticates the local administrative user.
 
 Request:
 
@@ -47,15 +45,11 @@ Response `200`:
 }
 ```
 
-Possível erro:
-
-- `401`: credenciais inválidas.
+Possible error: `401` for invalid credentials.
 
 ### `GET /api/auth/me`
 
-Retorna o usuário autenticado.
-
-Response `200`:
+Returns the authenticated user.
 
 ```json
 {
@@ -63,15 +57,13 @@ Response `200`:
 }
 ```
 
-Possível erro:
+Possible error: `401` for a missing, invalid, or expired token.
 
-- `401`: token ausente, inválido ou expirado.
-
-## Eventos
+## Events
 
 ### `POST /api/events`
 
-Cria e persiste um evento, registrando a mensagem correspondente em `outbox_messages`. A publicação na exchange `relay.events` é feita pelo `relay-outbox-publisher`.
+Creates and persists an event and writes the corresponding message to `outbox_messages`. The `relay-outbox-publisher` publishes it to the `relay.events` exchange.
 
 Request:
 
@@ -87,13 +79,13 @@ Request:
 }
 ```
 
-Campos:
+Fields:
 
-- `event_type`: string obrigatória, entre 1 e 120 caracteres.
-- `payload`: objeto JSON obrigatório.
-- `routing_key`: string opcional, até 120 caracteres. Se ausente, o backend usa `events.created`.
-- `correlation_id`: string opcional, até 120 caracteres.
-- `trace_id`: string opcional, até 120 caracteres.
+- `event_type`: required string from 1 through 120 characters;
+- `payload`: required JSON object;
+- `routing_key`: optional string up to 120 characters; defaults to `events.created`;
+- `correlation_id`: optional string up to 120 characters;
+- `trace_id`: optional string up to 120 characters.
 
 Response `201`:
 
@@ -113,20 +105,16 @@ Response `201`:
 }
 ```
 
-Possível erro:
+Possible errors:
 
-- `401`: token ausente, inválido ou expirado.
-- `503`: evento armazenado, mas publicação direta/legada para RabbitMQ falhou. No fluxo atual, a publicação confiável ocorre pela outbox.
+- `401`: missing, invalid, or expired token;
+- `503`: the event was stored, but the legacy direct RabbitMQ publishing path failed. The current reliable flow publishes through the Outbox.
 
 ### `GET /api/events`
 
-Lista eventos recentes para alimentar o dashboard operacional.
+Lists recent events for the operational dashboard.
 
-Query params:
-
-- `limit`: inteiro entre 1 e 100. Padrão: `25`.
-
-Response:
+Query parameter: `limit`, an integer from 1 through 100; default `25`.
 
 ```json
 [
@@ -146,15 +134,11 @@ Response:
 ]
 ```
 
-Possível erro:
-
-- `401`: token ausente, inválido ou expirado.
+Possible error: `401` for a missing, invalid, or expired token.
 
 ### `GET /api/events/summary`
 
-Retorna uma visão agregada para o dashboard operacional.
-
-Response:
+Returns aggregated data for the operational dashboard.
 
 ```json
 {
@@ -174,87 +158,30 @@ Response:
 }
 ```
 
-Quando não houver eventos em DLQ, `oldest_dead_letter_age_seconds` retorna `null`.
-
-Possível erro:
-
-- `401`: token ausente, inválido ou expirado.
+When the DLQ is empty, `oldest_dead_letter_age_seconds` is `null`.
 
 ### `GET /api/events/{id}`
 
-Mostra detalhes de um evento, incluindo payload, tentativas, logs e registros relacionados de DLQ.
+Returns an event with its payload, processing attempts, logs, and related DLQ records.
 
-Response:
+The response includes the event fields plus:
 
-```json
-{
-  "id": "event-id",
-  "event_type": "customer.created",
-  "payload": {
-    "customer_id": "123"
-  },
-  "routing_key": "events.created",
-  "correlation_id": "correlation-id",
-  "trace_id": "trace-id",
-  "status": "dead_letter",
-  "created_at": "2026-01-01T12:00:00Z",
-  "updated_at": "2026-01-01T12:10:00Z",
-  "attempts": [
-    {
-      "id": "attempt-id",
-      "event_id": "event-id",
-      "attempt_number": 1,
-      "status": "failed",
-      "error_message": "handler error",
-      "started_at": "2026-01-01T12:00:01Z",
-      "finished_at": "2026-01-01T12:00:02Z"
-    }
-  ],
-  "logs": [
-    {
-      "id": "log-id",
-      "event_id": "event-id",
-      "level": "error",
-      "message": "Event failed",
-      "log_metadata": {
-        "reason": "handler error"
-      },
-      "created_at": "2026-01-01T12:00:02Z"
-    }
-  ],
-  "dead_letter_entries": [
-    {
-      "id": "dead-letter-id",
-      "event_id": "event-id",
-      "reason": "max_retries_exceeded",
-      "payload": {
-        "customer_id": "123"
-      },
-      "retry_count": 3,
-      "original_routing_key": "events.created",
-      "error_message": "handler error",
-      "created_at": "2026-01-01T12:10:00Z"
-    }
-  ]
-}
-```
+- `attempts`: attempt number, state, error, and start/finish timestamps;
+- `logs`: level, message, metadata, and timestamp;
+- `dead_letter_entries`: reason, payload, retry count, original routing key, and error.
 
-Possível erro:
+Possible errors:
 
-- `401`: token ausente, inválido ou expirado.
-- `404`: evento não encontrado.
+- `401`: missing, invalid, or expired token;
+- `404`: event not found.
 
 ## Dead Letter Events
 
 ### `GET /api/dead-letter-events`
 
-Lista eventos que foram enviados para DLQ.
+Lists events sent to the DLQ.
 
-Query params:
-
-- `limit`: inteiro entre 1 e 100. Padrão: `50`.
-
-Response:
+Query parameter: `limit`, an integer from 1 through 100; default `50`.
 
 ```json
 [
@@ -273,56 +200,18 @@ Response:
 ]
 ```
 
-Possível erro:
-
-- `401`: token ausente, inválido ou expirado.
-
 ### `GET /api/dead-letter-events/{id}`
 
-Mostra detalhes operacionais do evento morto, incluindo payload, evento original, tentativas e logs.
+Returns operational details for a dead-letter event, including its payload, original event, attempts, and logs.
 
-Response:
+Possible errors:
 
-```json
-{
-  "id": "dead-letter-id",
-  "event_id": "event-id",
-  "reason": "max_retries_exceeded",
-  "payload": {
-    "customer_id": "123"
-  },
-  "retry_count": 3,
-  "original_routing_key": "events.created",
-  "error_message": "handler error",
-  "created_at": "2026-01-01T12:10:00Z",
-  "event": {
-    "id": "event-id",
-    "event_type": "customer.created",
-    "payload": {
-      "customer_id": "123"
-    },
-    "routing_key": "events.created",
-    "correlation_id": "correlation-id",
-    "trace_id": "trace-id",
-    "status": "dead_letter",
-    "created_at": "2026-01-01T12:00:00Z",
-    "updated_at": "2026-01-01T12:10:00Z"
-  },
-  "attempts": [],
-  "logs": []
-}
-```
-
-Possível erro:
-
-- `401`: token ausente, inválido ou expirado.
-- `404`: evento de DLQ não encontrado.
+- `401`: missing, invalid, or expired token;
+- `404`: DLQ event not found.
 
 ### `POST /api/dead-letter-events/{id}/reprocess`
 
-Republica o evento original na exchange principal usando a routing key original. O Relay preserva `correlation_id` e `trace_id`, atualiza o evento original para `queued` e registra a ação operacional.
-
-Response:
+Republishes the original event to the main exchange with its original routing key. Relay preserves `correlation_id` and `trace_id`, moves the original event back to `queued`, and records the operational action.
 
 ```json
 {
@@ -335,17 +224,17 @@ Response:
 }
 ```
 
-Possíveis erros:
+Possible errors:
 
-- `401`: token ausente, inválido ou expirado.
-- `404`: evento de DLQ não encontrado.
-- `409`: reprocessamento bloqueado por regra de segurança operacional.
-- `503`: evento não foi republicado.
+- `401`: missing, invalid, or expired token;
+- `404`: DLQ event not found;
+- `409`: reprocessing blocked by an operational safety rule;
+- `503`: event could not be republished.
 
-## Semântica de Reprocessamento
+## Reprocessing Semantics
 
-- O evento original é reutilizado.
-- Nenhum novo `Event` é criado.
-- A routing key vem de `original_routing_key`, com fallback para `event.routing_key`.
-- `correlation_id` e `trace_id` são preservados.
-- A operação não substitui idempotência real no handler.
+- The original event is reused.
+- No new `Event` is created.
+- The routing key comes from `original_routing_key`, falling back to `event.routing_key`.
+- `correlation_id` and `trace_id` are preserved.
+- Reprocessing does not replace real handler idempotency.
