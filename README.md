@@ -1,39 +1,39 @@
 # Relay
 
-Relay é uma plataforma full stack para processamento assíncrono de eventos, construída com FastAPI, RabbitMQ, PostgreSQL, Redis, React, Docker e uma stack completa de observabilidade.
+Relay is a full-stack platform for asynchronous event processing, built with FastAPI, RabbitMQ, PostgreSQL, Redis, React, Docker, and a complete observability stack.
 
-O projeto demonstra como uma aplicação pode receber eventos, persistir estado de forma confiável, processar mensagens por domínio e oferecer visibilidade operacional sobre falhas, retries, DLQ, métricas, logs e traces.
+The project demonstrates how an application can receive events, persist state reliably, process domain-specific messages, and provide operational visibility into failures, retries, the Dead Letter Queue, metrics, logs, and traces.
 
-## Tecnologias
+## Technology Stack
 
-| Área | Tecnologias |
+| Area | Technologies |
 | --- | --- |
 | Backend | Python, FastAPI, SQLAlchemy, Alembic, Pydantic |
 | Frontend | React, TypeScript, Vite |
-| Mensageria | RabbitMQ, topic exchange, DLX, retry queues |
-| Dados | PostgreSQL, Redis |
-| Observabilidade | Prometheus, Grafana, OpenTelemetry, Tempo, Loki, Alloy, Alertmanager |
-| Infra | Docker Compose, Nginx |
+| Messaging | RabbitMQ, topic exchange, DLX, retry queues |
+| Data | PostgreSQL, Redis |
+| Observability | Prometheus, Grafana, OpenTelemetry, Tempo, Loki, Alloy, Alertmanager |
+| Infrastructure | Docker Compose, Nginx |
 
-## Problema
+## Problem
 
-Sistemas orientados a eventos precisam publicar mensagens com segurança, processar cargas assíncronas sem duplicidade e oferecer uma forma clara de investigar falhas. O Relay simula esse cenário com uma arquitetura próxima de produção, separando API, publicação confiável, workers por domínio e ferramentas de operação.
+Event-driven systems must publish messages reliably, process asynchronous workloads without duplicate side effects, and provide a clear path for failure investigation. Relay models this scenario with a production-oriented architecture that separates the API, reliable publishing, domain workers, and operational tooling.
 
-## Funcionalidades
+## Features
 
-- Criação e listagem de eventos.
-- Publicação confiável com Transactional Outbox.
-- Processamento assíncrono por domínio.
-- Retry com backoff progressivo.
-- Dead Letter Queue com inspeção e reprocessamento manual.
-- Consumers idempotentes.
-- Correlação por `correlation_id` e `trace_id`.
-- Dashboard web com visão operacional, filtros, paginação, detalhes de evento e operação da DLQ.
-- Autenticação JWT simples para a interface operacional.
-- CI com validação de backend, frontend e Docker Compose.
-- Métricas, logs, tracing distribuído e alertas.
+- Event creation and listing.
+- Reliable publishing through the Transactional Outbox pattern.
+- Domain-specific asynchronous processing.
+- Progressive retry backoff.
+- Dead Letter Queue inspection and manual reprocessing.
+- Idempotent consumers.
+- Correlation through `correlation_id` and `trace_id`.
+- Operational web dashboard with filters, pagination, event details, and DLQ operations.
+- JWT authentication for the operational interface.
+- CI validation for backend, frontend, and Docker Compose.
+- Metrics, centralized logs, distributed tracing, and alerting.
 
-## Arquitetura
+## Architecture
 
 ```text
 API -> PostgreSQL + Outbox -> Outbox Publisher -> RabbitMQ -> Workers -> Retry/DLQ -> Observability Stack
@@ -41,16 +41,16 @@ API -> PostgreSQL + Outbox -> Outbox Publisher -> RabbitMQ -> Workers -> Retry/D
 
 ![Relay Architecture](assets/architecture.png)
 
-## Como Executar
+## Running Locally
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-URLs principais:
+Main URLs:
 
-- Aplicação: http://localhost
+- Application: http://localhost
 - API: http://localhost:8000
 - Health check: http://localhost/health
 - RabbitMQ Management: http://localhost:15672
@@ -58,45 +58,45 @@ URLs principais:
 - Alertmanager: http://localhost:9093
 - Grafana: http://localhost:3000
 
-Credenciais locais padrão:
+Default local credentials:
 
-- Aplicação: `admin` / `relay_admin`
+- Application: `admin` / `relay_admin`
 - RabbitMQ: `relay` / `relay_dev_password`
 - Grafana: `relay` / `relay_dev_password`
 
 ## Endpoints
 
-| Método | Endpoint | Descrição |
+| Method | Endpoint | Description |
 | --- | --- | --- |
-| `GET` | `/health` | Health check da API |
-| `POST` | `/api/auth/login` | Autentica o operador |
-| `GET` | `/api/auth/me` | Retorna usuário autenticado |
-| `POST` | `/api/events` | Cria um evento |
-| `GET` | `/api/events` | Lista eventos recentes |
-| `GET` | `/api/events/summary` | Resume eventos por status e DLQ |
-| `GET` | `/api/events/{id}` | Detalha evento, tentativas, logs e DLQ |
-| `GET` | `/api/dead-letter-events` | Lista eventos em DLQ |
-| `GET` | `/api/dead-letter-events/{id}` | Detalha um evento em DLQ |
-| `POST` | `/api/dead-letter-events/{id}/reprocess` | Reprocessa um evento morto |
+| `GET` | `/health` | Checks API health |
+| `POST` | `/api/auth/login` | Authenticates the operator |
+| `GET` | `/api/auth/me` | Returns the authenticated user |
+| `POST` | `/api/events` | Creates an event |
+| `GET` | `/api/events` | Lists recent events |
+| `GET` | `/api/events/summary` | Aggregates events by status and DLQ state |
+| `GET` | `/api/events/{id}` | Returns event details, attempts, logs, and DLQ records |
+| `GET` | `/api/dead-letter-events` | Lists DLQ events |
+| `GET` | `/api/dead-letter-events/{id}` | Returns DLQ event details |
+| `POST` | `/api/dead-letter-events/{id}/reprocess` | Reprocesses a dead-letter event |
 
 ## Dashboard
 
 ![Relay Dashboard](assets/dashboard.png)
 
-## Estrutura
+## Project Structure
 
 ```text
-backend/   API, modelos, serviços, workers e instrumentação
-frontend/  Dashboard operacional em React
-infra/     Nginx, Prometheus, Grafana, Loki, Tempo, Alloy e Alertmanager
-docs/      Documentação técnica complementar
-assets/    Imagens usadas na documentação
+backend/   API, models, services, workers, and instrumentation
+frontend/  React operational dashboard
+infra/     Nginx, Prometheus, Grafana, Loki, Tempo, Alloy, and Alertmanager
+docs/      Additional technical documentation
+assets/    Documentation images
 ```
 
-## Documentação
+## Documentation
 
-| Documento | Conteúdo |
+| Document | Coverage |
 | --- | --- |
-| [Arquitetura](docs/architecture.md) | Fluxo do sistema, RabbitMQ, Outbox, retry, DLQ, idempotência e workers |
-| [Observabilidade](docs/observability.md) | Prometheus, Grafana, métricas, logs, tracing e alertas |
-| [API](docs/api.md) | Endpoints, payloads, respostas e reprocessamento |
+| [Architecture](docs/architecture.md) | System flow, RabbitMQ, Outbox, retry, DLQ, idempotency, and workers |
+| [Observability](docs/observability.md) | Prometheus, Grafana, metrics, logs, tracing, and alerts |
+| [API](docs/api.md) | Endpoints, payloads, responses, and reprocessing |
