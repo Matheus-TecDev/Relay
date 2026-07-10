@@ -1,3 +1,4 @@
+import sys
 from functools import lru_cache
 
 from pydantic import Field
@@ -12,6 +13,11 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api"
 
     database_url: str = "postgresql+psycopg://relay:relay_dev_password@localhost:5432/relay"
+
+    auth_jwt_secret: str = "relay_dev_jwt_secret_change_me"
+    auth_token_expire_minutes: int = 480
+    auth_admin_username: str = "admin"
+    auth_admin_password: str = "relay_admin"
 
     rabbitmq_host: str = "localhost"
     rabbitmq_port: int = 5672
@@ -58,6 +64,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
+
+    @property
+    def tracing_enabled(self) -> bool:
+        return self.otel_enabled and self.environment.lower() != "test" and "pytest" not in sys.modules
 
 
 @lru_cache

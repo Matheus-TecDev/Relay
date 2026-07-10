@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { fetchEvents } from "../api/events";
 import type { EventItem } from "../types/event";
@@ -8,32 +8,24 @@ export function useEvents() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    fetchEvents()
+  const refresh = useCallback(() => {
+    setIsLoading(true);
+    return fetchEvents(100)
       .then((data) => {
-        if (isMounted) {
-          setEvents(data);
-          setError(null);
-        }
+        setEvents(data);
+        setError(null);
       })
       .catch((reason: unknown) => {
-        if (isMounted) {
-          setError(reason instanceof Error ? reason.message : "Unexpected error");
-        }
+        setError(reason instanceof Error ? reason.message : "Unexpected error");
       })
       .finally(() => {
-        if (isMounted) {
-          setIsLoading(false);
-        }
+        setIsLoading(false);
       });
-
-    return () => {
-      isMounted = false;
-    };
   }, []);
 
-  return { events, isLoading, error };
-}
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
+  return { events, isLoading, error, refresh };
+}

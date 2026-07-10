@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.auth import require_current_user
 from app.db.session import get_db
 from app.schemas.dead_letter_event import (
     DeadLetterEventDetail,
@@ -14,7 +15,7 @@ from app.services.dead_letter_service import (
     UnsafeReprocessError,
 )
 
-router = APIRouter(prefix="/dead-letter-events", tags=["dead-letter-events"])
+router = APIRouter(prefix="/dead-letter-events", tags=["dead-letter-events"], dependencies=[Depends(require_current_user)])
 
 
 def _to_list_item(dead_letter_event) -> DeadLetterEventListItem:

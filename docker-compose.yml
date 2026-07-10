@@ -51,6 +51,10 @@ services:
       PROJECT_NAME: ${PROJECT_NAME:-Relay}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       API_V1_PREFIX: ${API_V1_PREFIX:-/api}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-relay_dev_jwt_secret_change_me}
+      AUTH_TOKEN_EXPIRE_MINUTES: ${AUTH_TOKEN_EXPIRE_MINUTES:-480}
+      AUTH_ADMIN_USERNAME: ${AUTH_ADMIN_USERNAME:-admin}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-relay_admin}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://relay:relay_dev_password@postgres:5432/relay}
       RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
       RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}

@@ -3,30 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from app.schemas.event import EventRead
-
-
-class EventAttemptRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    event_id: str
-    attempt_number: int
-    status: str
-    error_message: str | None
-    started_at: datetime
-    finished_at: datetime | None
-
-
-class EventLogRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    event_id: str
-    level: str
-    message: str
-    log_metadata: dict[str, Any]
-    created_at: datetime
+from app.schemas.event import EventAttemptRead, EventLogRead, EventRead
 
 
 class DeadLetterEventListItem(BaseModel):

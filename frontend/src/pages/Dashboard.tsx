@@ -1,20 +1,19 @@
-import { Activity, CheckCircle2, Clock3, TriangleAlert } from "lucide-react";
+import { useState } from "react";
 
+import { useAuth } from "../auth/AuthContext";
 import { DeadLetterPanel } from "../components/DeadLetterPanel";
-import { EventsTable } from "../components/EventsTable";
-import { MetricCard } from "../components/MetricCard";
+import { DashboardSummary } from "../components/DashboardSummary";
+import { EventsExplorer } from "../components/EventsExplorer";
 import { useDeadLetterEvents } from "../hooks/useDeadLetterEvents";
 import { useEvents } from "../hooks/useEvents";
 
-const metrics = [
-  { label: "Queued Events", value: "128", tone: "blue" as const, icon: Clock3 },
-  { label: "Processed Events", value: "8.4k", tone: "green" as const, icon: CheckCircle2 },
-  { label: "Failed Events", value: "12", tone: "red" as const, icon: TriangleAlert },
-  { label: "Throughput/min", value: "342", tone: "amber" as const, icon: Activity }
-];
+type ActiveSection = "dashboard" | "events" | "dlq";
 
 export function Dashboard() {
-  const { events, isLoading, error } = useEvents();
+  const { user, logout } = useAuth();
+  const [activeSection, setActiveSection] = useState<ActiveSection>("dashboard");
+  const [summaryRefreshKey, setSummaryRefreshKey] = useState(0);
+  const { events, isLoading, error, refresh: refreshEvents } = useEvents();
   const {
     deadLetterEvents,
     isLoading: isDeadLetterLoading,
@@ -22,39 +21,67 @@ export function Dashboard() {
     refresh: refreshDeadLetterEvents
   } = useDeadLetterEvents();
 
+  function markSummaryDirty() {
+    setSummaryRefreshKey((current) => current + 1);
+  }
+
+  function refreshEventsAndSummary() {
+    return refreshEvents().then(markSummaryDirty);
+  }
+
+  function refreshDeadLettersAndSummary() {
+    return refreshDeadLetterEvents().then(markSummaryDirty);
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
         <div>
           <span className="eyebrow">Relay</span>
-          <h1>Event routing operations</h1>
+          <h1>Event operations</h1>
+          <p>Operational console for asynchronous event processing, retries and DLQ handling.</p>
         </div>
-        <div className="env-pill">Development</div>
+        <div className="topbar-actions">
+          <div className="env-pill">{user?.username ?? "admin"}</div>
+          <button className="command-button" type="button" onClick={logout}>
+            Logout
+          </button>
+        </div>
       </header>
 
-      <section className="metrics-grid" aria-label="Metrics">
-        {metrics.map((metric) => (
-          <MetricCard key={metric.label} {...metric} />
-        ))}
-      </section>
+      <nav className="section-tabs" aria-label="Main sections">
+        <button type="button" className={activeSection === "dashboard" ? "active" : ""} onClick={() => setActiveSection("dashboard")}>
+          Dashboard
+        </button>
+        <button type="button" className={activeSection === "events" ? "active" : ""} onClick={() => setActiveSection("events")}>
+          Events
+        </button>
+        <button type="button" className={activeSection === "dlq" ? "active" : ""} onClick={() => setActiveSection("dlq")}>
+          Dead Letter Queue
+        </button>
+      </nav>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>Recent events</h2>
-            <p>Exchange-routed events with correlation and trace context.</p>
-          </div>
-          {error ? <span className="error-text">{error}</span> : null}
-        </div>
-        <EventsTable events={events} isLoading={isLoading} />
-      </section>
+      {activeSection === "dashboard" ? (
+        <DashboardSummary
+          events={events}
+          deadLetterEvents={deadLetterEvents}
+          isLoading={isLoading || isDeadLetterLoading}
+          refreshKey={summaryRefreshKey}
+        />
+      ) : null}
 
-      <DeadLetterPanel
-        events={deadLetterEvents}
-        isLoading={isDeadLetterLoading}
-        error={deadLetterError}
-        onRefresh={refreshDeadLetterEvents}
-      />
+      {activeSection === "events" ? (
+        <EventsExplorer events={events} isLoading={isLoading} error={error} onRefresh={refreshEventsAndSummary} />
+      ) : null}
+
+      {activeSection === "dlq" ? (
+        <DeadLetterPanel
+          events={deadLetterEvents}
+          isLoading={isDeadLetterLoading}
+          error={deadLetterError}
+          onRefresh={refreshDeadLettersAndSummary}
+        />
+      ) : null}
     </main>
   );
 }

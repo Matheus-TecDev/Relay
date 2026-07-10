@@ -1,23 +1,4 @@
-import type { EventItem } from "./event";
-
-export type EventAttemptItem = {
-  id: string;
-  event_id: string;
-  attempt_number: number;
-  status: string;
-  error_message: string | null;
-  started_at: string;
-  finished_at: string | null;
-};
-
-export type EventLogItem = {
-  id: string;
-  event_id: string;
-  level: string;
-  message: string;
-  log_metadata: Record<string, unknown>;
-  created_at: string;
-};
+import type { EventAttemptItem, EventItem, EventLogItem } from "./event";
 
 export type DeadLetterEventItem = {
   id: string;

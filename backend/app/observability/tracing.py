@@ -47,7 +47,7 @@ def _sampler():
 def configure_tracing(service_name: str | None = None) -> None:
     global _pika_instrumented, _sqlalchemy_instrumented, _tracing_configured
 
-    if not settings.otel_enabled:
+    if not settings.tracing_enabled:
         return
 
     resolved_service_name = service_name or settings.otel_service_name
@@ -77,7 +77,7 @@ def configure_tracing(service_name: str | None = None) -> None:
 
 
 def instrument_fastapi(app: FastAPI) -> None:
-    if not settings.otel_enabled:
+    if not settings.tracing_enabled:
         return
 
     FastAPIInstrumentor.instrument_app(app)

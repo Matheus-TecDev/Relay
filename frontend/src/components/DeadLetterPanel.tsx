@@ -1,8 +1,11 @@
-import { Eye, RotateCcw, X } from "lucide-react";
+import { Eye, RefreshCcw, RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 
 import { fetchDeadLetterEventDetail, reprocessDeadLetterEvent } from "../api/deadLetterEvents";
 import type { DeadLetterEventDetail, DeadLetterEventItem } from "../types/deadLetterEvent";
+import { CopyButton } from "./CopyButton";
+import { JsonViewer } from "./JsonViewer";
+import { StatusBadge } from "./StatusBadge";
 
 type DeadLetterPanelProps = {
   events: DeadLetterEventItem[];
@@ -11,20 +14,13 @@ type DeadLetterPanelProps = {
   onRefresh: () => Promise<void>;
 };
 
-function shortId(value: string): string {
-  return value.length > 12 ? `${value.slice(0, 12)}...` : value;
-}
-
-function formatJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
-}
-
 export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLetterPanelProps) {
   const [selectedEvent, setSelectedEvent] = useState<DeadLetterEventDetail | null>(null);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [reprocessingId, setReprocessingId] = useState<string | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   function openDetail(id: string) {
     setIsDetailLoading(true);
@@ -37,7 +33,13 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
       .finally(() => setIsDetailLoading(false));
   }
 
-  function reprocess(id: string) {
+  function requestReprocess(id: string) {
+    if (confirmingId !== id) {
+      setConfirmingId(id);
+      setActionMessage("Click confirm to reprocess this dead letter event.");
+      return;
+    }
+
     setReprocessingId(id);
     setActionError(null);
     setActionMessage(null);
@@ -50,17 +52,26 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
       .catch((reason: unknown) => {
         setActionError(reason instanceof Error ? reason.message : "Failed to reprocess event");
       })
-      .finally(() => setReprocessingId(null));
+      .finally(() => {
+        setReprocessingId(null);
+        setConfirmingId(null);
+      });
   }
 
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2>Dead letter queue</h2>
+          <h2>Dead Letter Queue</h2>
           <p>Failed events that exceeded retry limits and need operator action.</p>
         </div>
-        {error ? <span className="error-text">{error}</span> : null}
+        <div className="panel-actions">
+          {error ? <span className="error-text">{error}</span> : null}
+          <button className="command-button" type="button" onClick={onRefresh} disabled={isLoading}>
+            <RefreshCcw size={16} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {isLoading ? <div className="table-state">Loading dead letter events...</div> : null}
@@ -75,6 +86,7 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
                 <th>Error</th>
                 <th>Retries</th>
                 <th>Routing</th>
+                <th>Status</th>
                 <th>Correlation</th>
                 <th>Trace</th>
                 <th>Created</th>
@@ -86,25 +98,28 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
                 <tr key={event.id}>
                   <td>
                     <strong>{event.reason}</strong>
-                    <span>{shortId(event.event_id)}</span>
+                    <span className="mono-cell">{shortId(event.event_id)}</span>
                   </td>
                   <td>{event.error_message ?? "No error message"}</td>
                   <td>{event.retry_count}</td>
                   <td>{event.original_routing_key ?? "unknown"}</td>
+                  <td>
+                    <StatusBadge status={event.event_status} />
+                  </td>
                   <td className="mono-cell">{shortId(event.correlation_id)}</td>
                   <td className="mono-cell">{shortId(event.trace_id)}</td>
-                  <td>{new Date(event.created_at).toLocaleString()}</td>
+                  <td>{formatDate(event.created_at)}</td>
                   <td>
                     <div className="row-actions">
                       <button className="icon-button" type="button" title="View detail" onClick={() => openDetail(event.id)}>
                         <Eye size={16} />
                       </button>
                       <button
-                        className="icon-button"
+                        className={`icon-button ${confirmingId === event.id ? "danger-action" : ""}`}
                         type="button"
-                        title="Reprocess"
+                        title={confirmingId === event.id ? "Confirm reprocess" : "Reprocess"}
                         disabled={reprocessingId === event.id}
-                        onClick={() => reprocess(event.id)}
+                        onClick={() => requestReprocess(event.id)}
                       >
                         <RotateCcw size={16} />
                       </button>
@@ -125,7 +140,8 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
           <div className="modal-panel" role="dialog" aria-modal="true" aria-label="Dead letter event detail">
             <div className="modal-header">
               <div>
-                <h2>Dead letter detail</h2>
+                <span className="eyebrow">Dead letter detail</span>
+                <h2>{selectedEvent?.reason ?? "Loading detail"}</h2>
                 {selectedEvent ? <p>{selectedEvent.original_routing_key ?? "unknown routing key"}</p> : null}
               </div>
               <button className="icon-button" type="button" title="Close" onClick={() => setSelectedEvent(null)}>
@@ -138,39 +154,56 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
             {selectedEvent ? (
               <div className="detail-grid">
                 <section>
-                  <h3>Payload</h3>
-                  <pre>{formatJson(selectedEvent.payload)}</pre>
+                  <div className="section-title-row">
+                    <h3>Payload</h3>
+                    <StatusBadge status={selectedEvent.event.status} />
+                  </div>
+                  <JsonViewer value={selectedEvent.payload} />
                 </section>
                 <section>
                   <h3>Technical data</h3>
                   <dl className="detail-list">
-                    <dt>Status</dt>
-                    <dd>{selectedEvent.event.status}</dd>
+                    <dt>Event ID</dt>
+                    <dd className="copyable-value">
+                      <span className="mono-cell">{selectedEvent.event_id}</span>
+                      <CopyButton value={selectedEvent.event_id} label="event_id" />
+                    </dd>
                     <dt>Correlation</dt>
-                    <dd className="mono-cell">{selectedEvent.event.correlation_id}</dd>
+                    <dd className="copyable-value">
+                      <span className="mono-cell">{selectedEvent.event.correlation_id}</span>
+                      <CopyButton value={selectedEvent.event.correlation_id} label="correlation_id" />
+                    </dd>
                     <dt>Trace</dt>
-                    <dd className="mono-cell">{selectedEvent.event.trace_id}</dd>
+                    <dd className="copyable-value">
+                      <span className="mono-cell">{selectedEvent.event.trace_id}</span>
+                      <CopyButton value={selectedEvent.event.trace_id} label="trace_id" />
+                    </dd>
+                    <dt>Retries</dt>
+                    <dd>{selectedEvent.retry_count}</dd>
                     <dt>Error</dt>
                     <dd>{selectedEvent.error_message ?? "No error message"}</dd>
+                    <dt>Created</dt>
+                    <dd>{formatDate(selectedEvent.created_at)}</dd>
                   </dl>
                   <button
-                    className="command-button"
+                    className={`command-button ${confirmingId === selectedEvent.id ? "danger-action" : ""}`}
                     type="button"
                     disabled={reprocessingId === selectedEvent.id}
-                    onClick={() => reprocess(selectedEvent.id)}
+                    onClick={() => requestReprocess(selectedEvent.id)}
                   >
                     <RotateCcw size={16} />
-                    Reprocessar
+                    {confirmingId === selectedEvent.id ? "Confirm reprocess" : "Reprocess"}
                   </button>
                 </section>
                 <section>
                   <h3>Attempts</h3>
                   <div className="stack-list">
+                    {selectedEvent.attempts.length === 0 ? <div className="empty-box">No attempts recorded.</div> : null}
                     {selectedEvent.attempts.map((attempt) => (
                       <div className="stack-item" key={attempt.id}>
                         <strong>Attempt {attempt.attempt_number}</strong>
                         <span>{attempt.status}</span>
-                        {attempt.error_message ? <small>{attempt.error_message}</small> : null}
+                        <small>{attempt.error_message ?? "No error message"}</small>
                       </div>
                     ))}
                   </div>
@@ -178,11 +211,14 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
                 <section>
                   <h3>Logs</h3>
                   <div className="stack-list">
+                    {selectedEvent.logs.length === 0 ? <div className="empty-box">No logs recorded.</div> : null}
                     {selectedEvent.logs.map((log) => (
                       <div className="stack-item" key={log.id}>
                         <strong>{log.message}</strong>
-                        <span>{new Date(log.created_at).toLocaleString()}</span>
-                        <small>{formatJson(log.log_metadata)}</small>
+                        <span>
+                          {log.level} · {formatDate(log.created_at)}
+                        </span>
+                        <small>{JSON.stringify(log.log_metadata, null, 2)}</small>
                       </div>
                     ))}
                   </div>
@@ -194,4 +230,12 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
       ) : null}
     </section>
   );
+}
+
+function shortId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 12)}...` : value;
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleString();
 }

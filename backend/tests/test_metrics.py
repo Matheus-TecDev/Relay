@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.auth import create_access_token
 from app.core.enums import EventStatus
 from app.db.base import Base
 from app.db.session import get_db
@@ -35,7 +36,7 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"Authorization": f"Bearer {create_access_token('admin')}"}) as test_client:
         yield test_client
     app.dependency_overrides.clear()
 

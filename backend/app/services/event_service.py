@@ -1,10 +1,12 @@
 import logging
+from datetime import UTC, datetime
 from time import perf_counter
 
-from sqlalchemy import desc, select
-from sqlalchemy.orm import Session
+from sqlalchemy import desc, func, select
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.enums import EventLogLevel, EventProcessingStatus, EventStatus
+from app.models.dead_letter_event import DeadLetterEvent
 from app.models.event import Event
 from app.models.event_log import EventLog
 from app.models.event_processing_state import EventProcessingState
@@ -20,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class EventPublishError(Exception):
+    pass
+
+
+class EventNotFoundError(Exception):
     pass
 
 
@@ -88,6 +94,48 @@ class EventService:
     def list_events(self, limit: int = 25) -> list[Event]:
         statement = select(Event).order_by(desc(Event.created_at)).limit(limit)
         return list(self.db.scalars(statement).all())
+
+    def get_event(self, event_id: str) -> Event:
+        event = self.db.scalar(
+            select(Event)
+            .options(
+                selectinload(Event.attempts),
+                selectinload(Event.logs),
+                selectinload(Event.dead_letter_entries),
+            )
+            .where(Event.id == event_id)
+        )
+        if event is None:
+            raise EventNotFoundError
+
+        return event
+
+    def get_summary(self) -> dict:
+        total_events = self.db.scalar(select(func.count(Event.id))) or 0
+        by_status = {status.value: 0 for status in EventStatus}
+        for status, count in self.db.execute(select(Event.status, func.count(Event.id)).group_by(Event.status)):
+            by_status[status] = count
+
+        dead_letter_total = self.db.scalar(select(func.count(DeadLetterEvent.id))) or 0
+        oldest_dead_letter_age_seconds = self._oldest_dead_letter_age_seconds()
+
+        return {
+            "total_events": total_events,
+            "by_status": by_status,
+            "dead_letter_total": dead_letter_total,
+            "oldest_dead_letter_age_seconds": oldest_dead_letter_age_seconds,
+            "recent_events_count": min(total_events, 25),
+        }
+
+    def _oldest_dead_letter_age_seconds(self) -> float | None:
+        oldest_created_at = self.db.scalar(select(func.min(DeadLetterEvent.created_at)))
+        if oldest_created_at is None:
+            return None
+
+        if oldest_created_at.tzinfo is None:
+            oldest_created_at = oldest_created_at.replace(tzinfo=UTC)
+
+        return max((datetime.now(UTC) - oldest_created_at).total_seconds(), 0)
 
     def _log(self, event_id: str, level: EventLogLevel, message: str, metadata: dict) -> None:
         self.db.add(

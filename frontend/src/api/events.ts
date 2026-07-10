@@ -1,14 +1,14 @@
-import type { EventItem } from "../types/event";
+import { apiRequest } from "./client";
+import type { DashboardSummary, EventDetail, EventItem } from "../types/event";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
-
-export async function fetchEvents(): Promise<EventItem[]> {
-  const response = await fetch(`${API_BASE_URL}/api/events`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch events");
-  }
-
-  return response.json();
+export function fetchEvents(limit = 100): Promise<EventItem[]> {
+  return apiRequest<EventItem[]>(`/api/events?limit=${limit}`);
 }
 
+export function fetchEventDetail(id: string): Promise<EventDetail> {
+  return apiRequest<EventDetail>(`/api/events/${id}`);
+}
+
+export function fetchEventsSummary(): Promise<DashboardSummary> {
+  return apiRequest<DashboardSummary>("/api/events/summary");
+}
