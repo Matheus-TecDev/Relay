@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pika
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -89,6 +90,35 @@ def test_failed_publication_keeps_outbox_message_retryable(
     assert stored_message.attempt_count == 1
     assert stored_message.last_error == "rabbitmq unavailable"
     assert stored_message.next_attempt_at is not None
+
+
+def test_unroutable_publication_keeps_outbox_message_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory = _session_factory()
+    _, outbox_message_id = _create_event_with_outbox(session_factory)
+
+    def unroutable_publish_message(*args, **kwargs) -> None:
+        raise pika.exceptions.UnroutableError([])
+
+    monkeypatch.setattr("app.services.outbox_service.publish_message", unroutable_publish_message)
+
+    with session_factory() as db:
+        outbox_message = acquire_next_outbox_message(db, "publisher-a")
+        assert outbox_message is not None
+        publish_outbox_message(db, outbox_message, "publisher-a")
+
+    with session_factory() as db:
+        stored_message = db.get(OutboxMessage, outbox_message_id)
+        assert stored_message is not None
+        event = db.get(Event, stored_message.event_id)
+
+    assert stored_message.status == OutboxStatus.FAILED.value
+    assert stored_message.published_at is None
+    assert stored_message.last_error == "0 unroutable message(s) returned"
+    assert stored_message.next_attempt_at is not None
+    assert event is not None
+    assert event.status == EventStatus.PUBLISH_FAILED.value
 
 
 def test_successful_publication_marks_outbox_published(

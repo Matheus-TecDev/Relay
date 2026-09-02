@@ -124,6 +124,7 @@ def publish_message(
 ) -> None:
     with rabbitmq_channel() as channel:
         declare_topology(channel)
+        channel.confirm_delivery()
         channel.basic_publish(
             exchange=exchange,
             routing_key=routing_key,
@@ -134,6 +135,7 @@ def publish_message(
                 headers=headers or {},
                 correlation_id=message.get("correlation_id"),
             ),
+            mandatory=True,
         )
 
 
