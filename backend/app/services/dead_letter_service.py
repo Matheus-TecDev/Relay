@@ -1,18 +1,20 @@
 import logging
-from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.enums import EventLogLevel, EventStatus
+from app.core.config import settings
+from app.core.enums import EventLogLevel, EventProcessingStatus, EventStatus, OutboxStatus
 from app.models.dead_letter_event import DeadLetterEvent
 from app.models.event import Event
 from app.models.event_log import EventLog
+from app.models.event_processing_state import EventProcessingState
+from app.models.outbox_message import OutboxMessage
 from app.observability.metrics import (
     record_dead_letter_reprocess,
     record_dead_letter_reprocess_failed,
 )
-from app.queues.rabbitmq import publish_event
+from app.services.outbox_service import create_outbox_message_for_event
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +59,8 @@ class DeadLetterService:
         return dead_letter_event
 
     def reprocess_dead_letter_event(self, dead_letter_event_id: str) -> DeadLetterEvent:
-        dead_letter_event = self.get_dead_letter_event(dead_letter_event_id)
-        event = dead_letter_event.event
+        dead_letter_event = self._get_dead_letter_event_for_reprocess(dead_letter_event_id)
+        event = self._get_event_for_reprocess(dead_letter_event.event_id)
         if event is None:
             raise DeadLetterEventNotFoundError
 
@@ -67,50 +69,20 @@ class DeadLetterService:
             record_dead_letter_reprocess_failed("unknown", "missing_routing_key")
             raise UnsafeReprocessError("Dead letter event does not have a routing key.")
 
-        self._ensure_reprocess_is_safe(event.id, routing_key)
+        if event.status != EventStatus.DEAD_LETTER.value:
+            record_dead_letter_reprocess_failed(routing_key, "not_dead_letter")
+            raise UnsafeReprocessError("Event is not currently in dead letter state.")
 
-        message = {
-            "event_id": event.id,
-            "event_type": event.event_type,
-            "payload": event.payload,
-            "routing_key": routing_key,
-            "correlation_id": event.correlation_id,
-            "trace_id": event.trace_id,
-        }
-
-        try:
-            publish_event(message, routing_key)
-        except Exception as exc:
-            record_dead_letter_reprocess_failed(routing_key, "publish_failed")
-            logger.exception(
-                "Manual DLQ reprocess publish failed",
-                extra={
-                    "event_id": event.id,
-                    "dead_letter_event_id": dead_letter_event.id,
-                    "routing_key": routing_key,
-                    "correlation_id": event.correlation_id,
-                    "trace_id": event.trace_id,
-                },
-            )
-            self._log(
-                event.id,
-                EventLogLevel.ERROR,
-                "Manual DLQ reprocess publish failed",
-                {
-                    "dead_letter_event_id": dead_letter_event.id,
-                    "routing_key": routing_key,
-                    "error": str(exc),
-                },
-            )
-            self.db.commit()
-            raise DeadLetterPublishError from exc
-
+        self._reset_processing_state(event.id, routing_key)
         event.status = EventStatus.QUEUED.value
+        event.routing_key = routing_key
+        self._queue_outbox_reprocess(dead_letter_event, event, routing_key)
+
         record_dead_letter_reprocess(routing_key)
         self._log(
             event.id,
             EventLogLevel.INFO,
-            "Manual DLQ reprocess requested",
+            "Manual DLQ reprocess queued in outbox",
             {
                 "dead_letter_event_id": dead_letter_event.id,
                 "routing_key": routing_key,
@@ -119,7 +91,7 @@ class DeadLetterService:
             },
         )
         logger.info(
-            "Manual DLQ reprocess requested",
+            "Manual DLQ reprocess queued in outbox",
             extra={
                 "event_id": event.id,
                 "dead_letter_event_id": dead_letter_event.id,
@@ -132,19 +104,80 @@ class DeadLetterService:
         self.db.refresh(dead_letter_event)
         return dead_letter_event
 
-    def _ensure_reprocess_is_safe(self, event_id: str, routing_key: str) -> None:
-        recent_cutoff = datetime.now(UTC) - timedelta(minutes=1)
-        recent_reprocess = self.db.scalar(
-            select(EventLog)
-            .where(EventLog.event_id == event_id)
-            .where(EventLog.message == "Manual DLQ reprocess requested")
-            .where(EventLog.created_at >= recent_cutoff)
-            .order_by(desc(EventLog.created_at))
-            .limit(1)
+    def _get_dead_letter_event_for_reprocess(self, dead_letter_event_id: str) -> DeadLetterEvent:
+        dead_letter_event = self.db.scalar(
+            select(DeadLetterEvent)
+            .where(DeadLetterEvent.id == dead_letter_event_id)
+            .with_for_update()
         )
-        if recent_reprocess is not None:
-            record_dead_letter_reprocess_failed(routing_key, "recent_duplicate")
-            raise UnsafeReprocessError("Event was manually reprocessed recently.")
+        if dead_letter_event is None:
+            raise DeadLetterEventNotFoundError
+        return dead_letter_event
+
+    def _get_event_for_reprocess(self, event_id: str) -> Event | None:
+        return self.db.scalar(select(Event).where(Event.id == event_id).with_for_update())
+
+    def _reset_processing_state(self, event_id: str, routing_key: str) -> None:
+        processing_state = self.db.scalar(
+            select(EventProcessingState)
+            .where(EventProcessingState.event_id == event_id)
+            .with_for_update()
+        )
+        if processing_state is None:
+            self.db.add(
+                EventProcessingState(
+                    event_id=event_id,
+                    status=EventProcessingStatus.PENDING.value,
+                    routing_key=routing_key,
+                )
+            )
+            return
+
+        if processing_state.status == EventProcessingStatus.PROCESSED.value:
+            record_dead_letter_reprocess_failed(routing_key, "already_processed")
+            raise UnsafeReprocessError("Event was already processed.")
+
+        processing_state.status = EventProcessingStatus.PENDING.value
+        processing_state.worker_name = None
+        processing_state.routing_key = routing_key
+        processing_state.processing_started_at = None
+        processing_state.processed_at = None
+        processing_state.failed_at = None
+        processing_state.dead_lettered_at = None
+        processing_state.error_message = None
+
+    def _queue_outbox_reprocess(
+        self,
+        dead_letter_event: DeadLetterEvent,
+        event: Event,
+        routing_key: str,
+    ) -> None:
+        outbox_message = self.db.scalar(
+            select(OutboxMessage)
+            .where(OutboxMessage.event_id == event.id)
+            .with_for_update()
+        )
+        queued_message = create_outbox_message_for_event(event)
+        queued_message.headers = {
+            "x-reprocess-dead-letter-event-id": dead_letter_event.id,
+        }
+
+        if outbox_message is None:
+            self.db.add(queued_message)
+            return
+
+        outbox_message.exchange = settings.rabbitmq_exchange
+        outbox_message.routing_key = routing_key
+        outbox_message.payload = queued_message.payload
+        outbox_message.headers = queued_message.headers
+        outbox_message.status = OutboxStatus.PENDING.value
+        outbox_message.attempt_count = 0
+        outbox_message.last_error = None
+        outbox_message.last_attempt_at = None
+        outbox_message.next_attempt_at = None
+        outbox_message.locked_at = None
+        outbox_message.locked_by = None
+        outbox_message.published_at = None
 
     def _log(
         self,

@@ -112,14 +112,8 @@ def test_event_creation_increments_prometheus_metrics(
 def test_dead_letter_reprocess_increments_prometheus_metric(
     client: TestClient,
     db_session: Session,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dead_letter_event = seed_dead_letter_event(db_session)
-
-    def fake_publish_event(message: dict, routing_key: str) -> None:
-        del message, routing_key
-
-    monkeypatch.setattr("app.services.dead_letter_service.publish_event", fake_publish_event)
 
     response = client.post(f"/api/dead-letter-events/{dead_letter_event.id}/reprocess")
     metrics_response = client.get("/metrics")

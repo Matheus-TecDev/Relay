@@ -1,16 +1,21 @@
 import json
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select, text
 
+from app.core.auth import create_access_token
 from app.core.config import settings
-from app.core.enums import EventStatus, OutboxStatus
-from app.db.session import SessionLocal
-from app.models import Event, OutboxMessage
+from app.core.enums import EventProcessingStatus, EventStatus, OutboxStatus
+from app.db.session import SessionLocal, get_db
+from app.main import app
+from app.models import DeadLetterEvent, Event, EventProcessingState, OutboxMessage
 from app.queues.rabbitmq import declare_topology, rabbitmq_channel
 from app.schemas.event import EventCreate
 from app.services.event_service import EventService
@@ -64,6 +69,18 @@ def clean_integration_state() -> Iterator[None]:
     yield
 
 
+@pytest.fixture
+def integration_client() -> Iterator[TestClient]:
+    def override_get_db() -> Iterator:
+        with SessionLocal() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app, headers={"Authorization": f"Bearer {create_access_token('admin')}"}) as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
 def test_outbox_publish_confirmation_with_real_postgres_and_rabbitmq() -> None:
     valid_event_id = _create_event("customer.created", "events.created")
     valid_outbox_id = _publish_next_outbox_message()
@@ -103,6 +120,92 @@ def test_outbox_publish_confirmation_with_real_postgres_and_rabbitmq() -> None:
     assert failed_event.status == EventStatus.PUBLISH_FAILED.value
 
 
+def test_concurrent_dlq_reprocess_queues_single_outbox_publish_with_real_postgres_and_rabbitmq(
+    integration_client: TestClient,
+) -> None:
+    dead_letter_event_id, event_id = _seed_dead_letter_event("analytics.page_viewed")
+    barrier = Barrier(2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _: _attempt_dead_letter_reprocess_request(
+                    integration_client,
+                    dead_letter_event_id,
+                    barrier,
+                ),
+                range(2),
+            )
+        )
+
+    assert sorted(results) == ["conflict", "queued"]
+
+    with SessionLocal() as db:
+        event = db.get(Event, event_id)
+        processing_state = db.scalar(
+            select(EventProcessingState).where(EventProcessingState.event_id == event_id)
+        )
+        outbox_messages = list(
+            db.scalars(select(OutboxMessage).where(OutboxMessage.event_id == event_id)).all()
+        )
+        reprocess_log_count = db.scalar(
+            text(
+                "select count(*) from event_logs "
+                "where event_id = :event_id and message = 'Manual DLQ reprocess queued in outbox'"
+            ),
+            {"event_id": event_id},
+        )
+
+    assert event is not None
+    assert event.status == EventStatus.QUEUED.value
+    assert processing_state is not None
+    assert processing_state.status == EventProcessingStatus.PENDING.value
+    assert len(outbox_messages) == 1
+    assert outbox_messages[0].status == OutboxStatus.PENDING.value
+    assert outbox_messages[0].attempt_count == 0
+    assert reprocess_log_count == 1
+
+    outbox_id = _publish_next_outbox_message()
+    assert outbox_id == outbox_messages[0].id
+
+    with SessionLocal() as db:
+        published_message = db.get(OutboxMessage, outbox_id)
+
+    assert published_message is not None
+    assert published_message.status == OutboxStatus.PUBLISHED.value
+    assert published_message.published_at is not None
+
+    delivered_message = _get_message_from_queue(settings.rabbitmq_analytics_queue)
+    assert delivered_message is not None
+    assert delivered_message["event_id"] == event_id
+    assert delivered_message["routing_key"] == "analytics.page_viewed"
+    assert _get_message_from_queue(settings.rabbitmq_analytics_queue) is None
+
+
+def test_dlq_reprocess_unroutable_publish_remains_retryable_with_real_rabbitmq(
+    integration_client: TestClient,
+) -> None:
+    dead_letter_event_id, event_id = _seed_dead_letter_event("unbound.created")
+
+    response = integration_client.post(f"/api/dead-letter-events/{dead_letter_event_id}/reprocess")
+    assert response.status_code == 200
+    outbox_id = _publish_next_outbox_message()
+
+    with SessionLocal() as db:
+        failed_message = db.get(OutboxMessage, outbox_id)
+        event = db.get(Event, event_id)
+
+    assert failed_message is not None
+    assert failed_message.event_id == event_id
+    assert failed_message.status == OutboxStatus.FAILED.value
+    assert failed_message.published_at is None
+    assert failed_message.next_attempt_at is not None
+    assert failed_message.last_error is not None
+    assert "unroutable" in failed_message.last_error
+    assert event is not None
+    assert event.status == EventStatus.PUBLISH_FAILED.value
+
+
 def _create_event(event_type: str, routing_key: str) -> str:
     with SessionLocal() as db:
         event = EventService(db).create_event(
@@ -115,6 +218,81 @@ def _create_event(event_type: str, routing_key: str) -> str:
             )
         )
         return event.id
+
+
+def _seed_dead_letter_event(routing_key: str) -> tuple[str, str]:
+    with SessionLocal() as db:
+        event = Event(
+            event_type="analytics.page_viewed",
+            payload={"page": "/pricing"},
+            routing_key=routing_key,
+            correlation_id=f"correlation-{routing_key}",
+            trace_id=f"trace-{routing_key}",
+            status=EventStatus.DEAD_LETTER.value,
+        )
+        db.add(event)
+        db.flush()
+        db.add(
+            EventProcessingState(
+                event_id=event.id,
+                status=EventProcessingStatus.DEAD_LETTERED.value,
+                worker_name="relay-analytics-worker",
+                routing_key=routing_key,
+                attempt_count=4,
+                error_message="handler failed",
+            )
+        )
+        db.add(
+            OutboxMessage(
+                event_id=event.id,
+                exchange=settings.rabbitmq_exchange,
+                routing_key=routing_key,
+                payload={
+                    "event_id": event.id,
+                    "event_type": event.event_type,
+                    "payload": event.payload,
+                    "routing_key": routing_key,
+                    "correlation_id": event.correlation_id,
+                    "trace_id": event.trace_id,
+                },
+                headers={},
+                status=OutboxStatus.PUBLISHED.value,
+            )
+        )
+        dead_letter_event = DeadLetterEvent(
+            event_id=event.id,
+            reason="retry_limit_exceeded",
+            payload={
+                "event_id": event.id,
+                "event_type": event.event_type,
+                "payload": event.payload,
+                "routing_key": routing_key,
+                "correlation_id": event.correlation_id,
+                "trace_id": event.trace_id,
+            },
+            retry_count=4,
+            original_routing_key=routing_key,
+            error_message="handler failed",
+        )
+        db.add(dead_letter_event)
+        db.commit()
+        return dead_letter_event.id, event.id
+
+
+def _attempt_dead_letter_reprocess_request(
+    client: TestClient,
+    dead_letter_event_id: str,
+    barrier: Barrier | None = None,
+) -> str:
+    if barrier is not None:
+        barrier.wait()
+
+    response = client.post(f"/api/dead-letter-events/{dead_letter_event_id}/reprocess")
+    if response.status_code == 200:
+        return "queued"
+    if response.status_code == 409:
+        return "conflict"
+    return f"unexpected:{response.status_code}"
 
 
 def _publish_next_outbox_message() -> str:
