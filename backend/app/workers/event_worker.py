@@ -443,31 +443,45 @@ def handle_message(
         next_retry_count = retry_count + 1
         error_message = str(exc)
 
-        if retry_limit_exceeded(next_retry_count):
-            publish_dead_letter_event(message, original_routing_key, next_retry_count, error_message)
-            _mark_event_dead_letter(
-                message["event_id"],
-                message,
-                next_retry_count,
-                original_routing_key,
-                error_message,
-                worker_config.name,
+        try:
+            if retry_limit_exceeded(next_retry_count):
+                publish_dead_letter_event(message, original_routing_key, next_retry_count, error_message)
+                _mark_event_dead_letter(
+                    message["event_id"],
+                    message,
+                    next_retry_count,
+                    original_routing_key,
+                    error_message,
+                    worker_config.name,
+                )
+            else:
+                retry_policy = publish_retry_event(
+                    message,
+                    original_routing_key,
+                    next_retry_count,
+                    error_message,
+                )
+                _record_retry(
+                    message["event_id"],
+                    next_retry_count,
+                    retry_policy.queue_name,
+                    original_routing_key,
+                    error_message,
+                    worker_config.name,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to publish recovery message; requeueing original message",
+                extra={
+                    "event_id": message["event_id"],
+                    "retry_count": next_retry_count,
+                    "original_routing_key": original_routing_key,
+                    "worker_name": worker_config.name,
+                },
             )
-        else:
-            retry_policy = publish_retry_event(
-                message,
-                original_routing_key,
-                next_retry_count,
-                error_message,
-            )
-            _record_retry(
-                message["event_id"],
-                next_retry_count,
-                retry_policy.queue_name,
-                original_routing_key,
-                error_message,
-                worker_config.name,
-            )
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            channel.stop_consuming()
+            return
 
         channel.basic_ack(delivery_tag=method.delivery_tag)
 
