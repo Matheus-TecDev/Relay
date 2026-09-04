@@ -2,7 +2,7 @@ import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event as ThreadingEvent
 
 import pytest
 from alembic import command
@@ -206,6 +206,83 @@ def test_dlq_reprocess_unroutable_publish_remains_retryable_with_real_rabbitmq(
     assert event.status == EventStatus.PUBLISH_FAILED.value
 
 
+def test_concurrent_outbox_acquire_with_two_pending_messages_uses_skip_locked_postgres() -> None:
+    event_ids = [
+        _create_event("customer.created", "events.created"),
+        _create_event("customer.updated", "events.created"),
+    ]
+    expected_outbox_ids = set(_outbox_ids_for_events(event_ids))
+    start_barrier = Barrier(2)
+    acquired_barrier = Barrier(2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        acquired_ids = list(
+            executor.map(
+                lambda publisher_name: _acquire_outbox_message_holding_transaction(
+                    publisher_name,
+                    start_barrier,
+                    acquired_barrier,
+                ),
+                ("publisher-a", "publisher-b"),
+            )
+        )
+
+    assert set(acquired_ids) == expected_outbox_ids
+    assert len(acquired_ids) == len(set(acquired_ids))
+
+    with SessionLocal() as db:
+        messages = list(
+            db.scalars(
+                select(OutboxMessage)
+                .where(OutboxMessage.id.in_(acquired_ids))
+                .order_by(OutboxMessage.locked_by)
+            ).all()
+        )
+
+    assert [message.status for message in messages] == [
+        OutboxStatus.PUBLISHING.value,
+        OutboxStatus.PUBLISHING.value,
+    ]
+    assert [message.locked_by for message in messages] == ["publisher-a", "publisher-b"]
+    assert all(message.locked_at is not None for message in messages)
+    assert [message.attempt_count for message in messages] == [1, 1]
+
+
+def test_concurrent_outbox_acquire_with_one_pending_message_skips_locked_row_postgres() -> None:
+    event_id = _create_event("customer.created", "events.created")
+    expected_outbox_id = _outbox_ids_for_events([event_id])[0]
+    acquired_by_a = ThreadingEvent()
+    release_a = ThreadingEvent()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        publisher_a = executor.submit(
+            _acquire_single_outbox_message_holding_transaction,
+            "publisher-a",
+            acquired_by_a,
+            release_a,
+        )
+        publisher_b = executor.submit(
+            _acquire_after_other_publisher_holds_lock,
+            "publisher-b",
+            acquired_by_a,
+        )
+        acquired_by_b = publisher_b.result(timeout=10)
+        release_a.set()
+        acquired_by_a_id = publisher_a.result(timeout=10)
+
+    assert acquired_by_a_id == expected_outbox_id
+    assert acquired_by_b is None
+
+    with SessionLocal() as db:
+        message = db.get(OutboxMessage, expected_outbox_id)
+
+    assert message is not None
+    assert message.status == OutboxStatus.PUBLISHING.value
+    assert message.locked_by == "publisher-a"
+    assert message.locked_at is not None
+    assert message.attempt_count == 1
+
+
 def _create_event(event_type: str, routing_key: str) -> str:
     with SessionLocal() as db:
         event = EventService(db).create_event(
@@ -218,6 +295,17 @@ def _create_event(event_type: str, routing_key: str) -> str:
             )
         )
         return event.id
+
+
+def _outbox_ids_for_events(event_ids: list[str]) -> list[str]:
+    with SessionLocal() as db:
+        return list(
+            db.scalars(
+                select(OutboxMessage.id)
+                .where(OutboxMessage.event_id.in_(event_ids))
+                .order_by(OutboxMessage.created_at)
+            ).all()
+        )
 
 
 def _seed_dead_letter_event(routing_key: str) -> tuple[str, str]:
@@ -293,6 +381,49 @@ def _attempt_dead_letter_reprocess_request(
     if response.status_code == 409:
         return "conflict"
     return f"unexpected:{response.status_code}"
+
+
+def _acquire_outbox_message_holding_transaction(
+    publisher_name: str,
+    start_barrier: Barrier,
+    acquired_barrier: Barrier,
+) -> str:
+    with SessionLocal() as db:
+        start_barrier.wait(timeout=10)
+        outbox_message = acquire_next_outbox_message(db, publisher_name)
+        assert outbox_message is not None
+        outbox_message_id = outbox_message.id
+        acquired_barrier.wait(timeout=10)
+        db.commit()
+        return outbox_message_id
+
+
+def _acquire_single_outbox_message_holding_transaction(
+    publisher_name: str,
+    acquired_event: ThreadingEvent,
+    release_event: ThreadingEvent,
+) -> str:
+    with SessionLocal() as db:
+        outbox_message = acquire_next_outbox_message(db, publisher_name)
+        assert outbox_message is not None
+        outbox_message_id = outbox_message.id
+        acquired_event.set()
+        assert release_event.wait(timeout=10)
+        db.commit()
+        return outbox_message_id
+
+
+def _acquire_after_other_publisher_holds_lock(
+    publisher_name: str,
+    acquired_event: ThreadingEvent,
+) -> str | None:
+    assert acquired_event.wait(timeout=10)
+    with SessionLocal() as db:
+        outbox_message = acquire_next_outbox_message(db, publisher_name)
+        db.commit()
+        if outbox_message is None:
+            return None
+        return outbox_message.id
 
 
 def _publish_next_outbox_message() -> str:
