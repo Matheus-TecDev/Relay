@@ -2,6 +2,7 @@ import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from threading import Barrier, Event as ThreadingEvent
 
 import pytest
@@ -19,7 +20,11 @@ from app.models import DeadLetterEvent, Event, EventProcessingState, OutboxMessa
 from app.queues.rabbitmq import declare_topology, rabbitmq_channel
 from app.schemas.event import EventCreate
 from app.services.event_service import EventService
-from app.services.outbox_service import acquire_next_outbox_message, publish_outbox_message
+from app.services.outbox_service import (
+    acquire_next_outbox_message,
+    publish_outbox_message,
+    recover_stuck_publishing_messages,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -281,6 +286,100 @@ def test_concurrent_outbox_acquire_with_one_pending_message_skips_locked_row_pos
     assert message.locked_by == "publisher-a"
     assert message.locked_at is not None
     assert message.attempt_count == 1
+
+
+def test_stuck_publishing_outbox_message_recovers_and_can_be_reacquired_postgres() -> None:
+    event_id = _create_event("customer.created", "events.created")
+    outbox_id = _outbox_ids_for_events([event_id])[0]
+
+    with SessionLocal() as db:
+        outbox_message = acquire_next_outbox_message(db, "crashed-publisher")
+        assert outbox_message is not None
+        assert outbox_message.id == outbox_id
+        assert outbox_message.status == OutboxStatus.PUBLISHING.value
+        assert outbox_message.locked_by == "crashed-publisher"
+        assert outbox_message.locked_at is not None
+        assert outbox_message.attempt_count == 1
+        db.commit()
+
+    expired_locked_at = datetime.now(UTC) - timedelta(
+        seconds=settings.outbox_publishing_timeout_seconds + 60
+    )
+    with SessionLocal() as db:
+        outbox_message = db.get(OutboxMessage, outbox_id)
+        assert outbox_message is not None
+        outbox_message.locked_at = expired_locked_at
+        db.commit()
+
+    with SessionLocal() as db:
+        recovered = recover_stuck_publishing_messages(db)
+        recovered_ids = [message.id for message in recovered]
+        db.commit()
+
+    assert recovered_ids == [outbox_id]
+
+    with SessionLocal() as db:
+        recovered_message = db.get(OutboxMessage, outbox_id)
+
+    assert recovered_message is not None
+    assert recovered_message.status == OutboxStatus.FAILED.value
+    assert recovered_message.last_error == "publishing_timeout"
+    assert recovered_message.next_attempt_at is not None
+    assert recovered_message.next_attempt_at <= datetime.now(UTC)
+    assert recovered_message.locked_at is None
+    assert recovered_message.locked_by is None
+    assert recovered_message.attempt_count == 1
+
+    with SessionLocal() as db:
+        reacquired_message = acquire_next_outbox_message(db, "recovery-publisher")
+        assert reacquired_message is not None
+        reacquired_id = reacquired_message.id
+        assert reacquired_message.status == OutboxStatus.PUBLISHING.value
+        assert reacquired_message.locked_by == "recovery-publisher"
+        assert reacquired_message.locked_at is not None
+        assert reacquired_message.attempt_count == 2
+        db.commit()
+
+    assert reacquired_id == outbox_id
+
+
+def test_recent_publishing_outbox_message_is_not_recovered_or_reacquired_postgres() -> None:
+    event_id = _create_event("customer.created", "events.created")
+    outbox_id = _outbox_ids_for_events([event_id])[0]
+
+    with SessionLocal() as db:
+        outbox_message = acquire_next_outbox_message(db, "active-publisher")
+        assert outbox_message is not None
+        assert outbox_message.id == outbox_id
+        db.commit()
+
+    recent_locked_at = datetime.now(UTC)
+    with SessionLocal() as db:
+        outbox_message = db.get(OutboxMessage, outbox_id)
+        assert outbox_message is not None
+        outbox_message.locked_at = recent_locked_at
+        db.commit()
+
+    with SessionLocal() as db:
+        recovered = recover_stuck_publishing_messages(db)
+        db.commit()
+
+    assert recovered == []
+
+    with SessionLocal() as db:
+        premature_acquire = acquire_next_outbox_message(db, "other-publisher")
+        db.commit()
+
+    assert premature_acquire is None
+
+    with SessionLocal() as db:
+        active_message = db.get(OutboxMessage, outbox_id)
+
+    assert active_message is not None
+    assert active_message.status == OutboxStatus.PUBLISHING.value
+    assert active_message.locked_by == "active-publisher"
+    assert active_message.locked_at is not None
+    assert active_message.attempt_count == 1
 
 
 def _create_event(event_type: str, routing_key: str) -> str:
