@@ -32,6 +32,42 @@ jobs:
       - name: Test
         run: pytest
 
+  backend-integration:
+    name: Backend Integration
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: test
+      OTEL_ENABLED: "false"
+      RUN_RELAY_INTEGRATION_TESTS: "1"
+      DATABASE_URL: postgresql+psycopg://relay:relay_dev_password@localhost:55432/relay_integration
+      RABBITMQ_HOST: localhost
+      RABBITMQ_PORT: "5679"
+      RABBITMQ_USER: relay
+      RABBITMQ_PASSWORD: relay_dev_password
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Start integration services
+        run: docker compose -f docker-compose.integration.yml up -d --wait postgres rabbitmq
+
+      - name: Run integration tests
+        working-directory: backend
+        run: pytest -m integration tests/integration/test_outbox_rabbitmq_postgres.py
+
+      - name: Stop integration services
+        if: always()
+        run: docker compose -f docker-compose.integration.yml down --volumes --remove-orphans
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
