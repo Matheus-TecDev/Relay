@@ -38,6 +38,8 @@ metrics_generator:
     span_metrics: {}
   traces_storage:
     path: /var/tempo/generator/traces
+  storage:
+    path: /var/tempo/generator/wal
 
 storage:
   trace:
