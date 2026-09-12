@@ -24,7 +24,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-test.txt
 
       - name: Compile
         run: python -m compileall app
@@ -55,7 +55,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: backend
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-test.txt
 
       - name: Start integration services
         run: docker compose -f docker-compose.integration.yml up -d --wait postgres rabbitmq
