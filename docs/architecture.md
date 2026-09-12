@@ -145,7 +145,9 @@ Shared retry queues return messages through `retry.*`. Workers inspect `x-origin
 
 ## Retry and Backoff
 
-Workers avoid `basic_nack(requeue=True)`, preventing tight loops in the main queue. On failure, the original message is republished to the DLX with `x-retry-count` and the appropriate retry routing key, then acknowledged.
+On normal handler failure, workers avoid `basic_nack(requeue=True)` to prevent tight loops in the main queue. The original message is published to the DLX with `x-retry-count` and the appropriate retry routing key. The original message is acknowledged only after the recovery message is published successfully and the corresponding state is persisted.
+
+If publishing the retry or DLQ message fails, the worker does not persist the state as sent. It issues `basic_nack(requeue=True)`, calls `stop_consuming()`, and leaves the original message available for redelivery after the worker or messaging infrastructure recovers.
 
 Failure progression:
 
@@ -162,9 +164,9 @@ The operational DLQ stores messages that exhausted automated retries. PostgreSQL
 
 - `GET /api/dead-letter-events`: list DLQ events with failure and correlation data;
 - `GET /api/dead-letter-events/{id}`: inspect payload, original event, attempts, and logs;
-- `POST /api/dead-letter-events/{id}/reprocess`: republish the existing event.
+- `POST /api/dead-letter-events/{id}/reprocess`: queue the existing event for Outbox-backed reprocessing.
 
-Manual reprocessing preserves `correlation_id`, `trace_id`, and `original_routing_key`, moves the original event to `queued`, and creates an operational `EventLog`. It does not create a second `Event`.
+Manual reprocessing preserves `correlation_id`, `trace_id`, and `original_routing_key`, resets the processing state, moves the original event to `queued`, creates or resets an `OutboxMessage` to `pending`, and creates an operational `EventLog`. It does not create a second `Event` or publish directly inside the HTTP request.
 
 Recommended operation:
 

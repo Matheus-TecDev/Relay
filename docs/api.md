@@ -211,7 +211,9 @@ Possible errors:
 
 ### `POST /api/dead-letter-events/{id}/reprocess`
 
-Republishes the original event to the main exchange with its original routing key. Relay preserves `correlation_id` and `trace_id`, moves the original event back to `queued`, and records the operational action.
+Queues the original event for reprocessing through the Transactional Outbox. Relay reuses the existing `Event`, preserves `correlation_id` and `trace_id`, resets the processing state to `pending`, moves the event back to `queued`, creates or resets its `OutboxMessage` to `pending`, and records the operational action.
+
+The request returns after the database transaction is persisted. RabbitMQ publication is asynchronous and performed later by the Outbox publisher, so `200` means the event was queued in the Outbox, not that broker delivery was already confirmed. Later publication failures remain retryable by the Outbox retry flow.
 
 ```json
 {
@@ -228,8 +230,7 @@ Possible errors:
 
 - `401`: missing, invalid, or expired token;
 - `404`: DLQ event not found;
-- `409`: reprocessing blocked by an operational safety rule;
-- `503`: event could not be republished.
+- `409`: reprocessing blocked by an operational safety rule.
 
 ## Reprocessing Semantics
 
@@ -237,4 +238,6 @@ Possible errors:
 - No new `Event` is created.
 - The routing key comes from `original_routing_key`, falling back to `event.routing_key`.
 - `correlation_id` and `trace_id` are preserved.
+- `EventProcessingState` is reset to `pending`.
+- `OutboxMessage` is created or reset to `pending`.
 - Reprocessing does not replace real handler idempotency.
