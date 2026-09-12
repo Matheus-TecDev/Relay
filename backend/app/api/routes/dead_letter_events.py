@@ -10,7 +10,6 @@ from app.schemas.dead_letter_event import (
 )
 from app.services.dead_letter_service import (
     DeadLetterEventNotFoundError,
-    DeadLetterPublishError,
     DeadLetterService,
     UnsafeReprocessError,
 )
@@ -81,11 +80,6 @@ def reprocess_dead_letter_event(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dead letter event not found.") from exc
     except UnsafeReprocessError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except DeadLetterPublishError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Dead letter event was not republished.",
-        ) from exc
 
     event = dead_letter_event.event
     routing_key = dead_letter_event.original_routing_key or event.routing_key or ""
