@@ -464,6 +464,74 @@ td span {
   color: #166534;
 }
 
+.selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-bottom: 1px solid #e8edf4;
+  padding: 10px 16px;
+  background: #f8fafc;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.batch-report {
+  border-top: 1px solid #edf1f6;
+  padding: 12px 16px;
+}
+
+.batch-report p {
+  margin-top: 4px;
+  color: #657386;
+  font-size: 0.9rem;
+}
+
+.batch-report-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.batch-report-list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 0.88rem;
+}
+
+.status-batch-queued {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-batch-conflict,
+.status-batch-not_found {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-batch-failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.confirm-dialog {
+  width: min(520px, 100%);
+}
+
+.confirm-body {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  color: #25313f;
+  line-height: 1.5;
+}
+
 .inline-alert-warning {
   border: 1px solid #fde68a;
   border-radius: 8px;
