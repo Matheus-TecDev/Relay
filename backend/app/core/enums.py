@@ -30,3 +30,10 @@ class OutboxStatus(StrEnum):
     PUBLISHING = "publishing"
     PUBLISHED = "published"
     FAILED = "failed"
+
+
+class DeadLetterReprocessItemStatus(StrEnum):
+    QUEUED = "queued"
+    CONFLICT = "conflict"
+    NOT_FOUND = "not_found"
+    FAILED = "failed"
