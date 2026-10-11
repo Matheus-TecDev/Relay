@@ -232,6 +232,83 @@ Possible errors:
 - `404`: DLQ event not found;
 - `409`: reprocessing blocked by an operational safety rule.
 
+### `POST /api/dead-letter-events/reprocess-batch`
+
+Queues several dead-letter events for reprocessing in one request. Each item goes through the same rules as the single-event endpoint, which keeps working unchanged.
+
+Request:
+
+```json
+{
+  "dead_letter_event_ids": [
+    "3f0c2b1e-6f0a-4c59-9a55-0c8d4c1f2a11",
+    "9b7e4d2a-1c3f-4e8b-b6a2-5d7f9e0c3b22"
+  ]
+}
+```
+
+`dead_letter_event_ids` must contain from 1 through 20 valid UUIDs with no duplicates. Anything else is rejected with `422` before any event is touched.
+
+Response `200`:
+
+```json
+{
+  "summary": {
+    "total": 2,
+    "queued": 1,
+    "conflict": 1,
+    "not_found": 0,
+    "failed": 0
+  },
+  "results": [
+    {
+      "dead_letter_event_id": "3f0c2b1e-6f0a-4c59-9a55-0c8d4c1f2a11",
+      "status": "queued",
+      "reason": null,
+      "message": null,
+      "event_id": "event-id",
+      "routing_key": "events.created",
+      "correlation_id": "correlation-id",
+      "trace_id": "trace-id"
+    },
+    {
+      "dead_letter_event_id": "9b7e4d2a-1c3f-4e8b-b6a2-5d7f9e0c3b22",
+      "status": "conflict",
+      "reason": "not_dead_letter",
+      "message": "Event is not currently in dead letter state.",
+      "event_id": "other-event-id",
+      "routing_key": null,
+      "correlation_id": null,
+      "trace_id": null
+    }
+  ]
+}
+```
+
+`results` keeps the order of the request. Item statuses:
+
+| Status | Meaning | `reason` values |
+| --- | --- | --- |
+| `queued` | The item's transaction committed and its `OutboxMessage` is `pending`. | `null` |
+| `conflict` | Blocked by a safety rule; nothing changed. Equivalent to `409` on the single endpoint. | `not_dead_letter`, `already_processed`, `missing_routing_key`, `event_already_queued_in_batch` |
+| `not_found` | No DLQ record has this ID. Equivalent to `404` on the single endpoint. | `dead_letter_event_not_found` |
+| `failed` | An unexpected error happened and the item was rolled back. Safe to retry. | `internal_error` |
+
+Partial success:
+
+- A valid, authenticated request always returns `200`, even when no item was queued. Clients must read `summary` and `results`, not only the HTTP status.
+- Each item runs in its own database transaction, in request order. An item that fails is rolled back and does not affect the items before or after it.
+- `queued` means the event was persisted in the Outbox. RabbitMQ publication stays asynchronous and retryable, exactly as in the single endpoint; the request never publishes to the broker.
+- The batch is not atomic as a whole. If the request is interrupted, items already committed stay queued.
+- Repeating a request is safe: events queued by the first call are no longer in dead letter state, so they come back as `conflict` with `not_dead_letter` and are not queued again.
+- An event can have several DLQ records. Whichever record is reprocessed first queues the event; the others return `conflict`, with `event_already_queued_in_batch` when the first one was in the same request.
+- Concurrent batch and single requests for the same event are serialized by PostgreSQL row locks, so only one of them queues it.
+
+Possible errors:
+
+- `401`: missing, invalid, or expired token;
+- `422`: empty list, more than 20 IDs, an ID that is not a UUID, or duplicate IDs.
+
 ## Reprocessing Semantics
 
 - The original event is reused.

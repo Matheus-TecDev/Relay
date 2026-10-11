@@ -164,7 +164,8 @@ The operational DLQ stores messages that exhausted automated retries. PostgreSQL
 
 - `GET /api/dead-letter-events`: list DLQ events with failure and correlation data;
 - `GET /api/dead-letter-events/{id}`: inspect payload, original event, attempts, and logs;
-- `POST /api/dead-letter-events/{id}/reprocess`: queue the existing event for Outbox-backed reprocessing.
+- `POST /api/dead-letter-events/{id}/reprocess`: queue the existing event for Outbox-backed reprocessing;
+- `POST /api/dead-letter-events/reprocess-batch`: apply the same reprocessing to up to 20 DLQ records, one transaction per record, with an individual result for each.
 
 Manual reprocessing preserves `correlation_id`, `trace_id`, and `original_routing_key`, resets the processing state, moves the original event to `queued`, creates or resets an `OutboxMessage` to `pending`, and creates an operational `EventLog`. It does not create a second `Event` or publish directly inside the HTTP request.
 
