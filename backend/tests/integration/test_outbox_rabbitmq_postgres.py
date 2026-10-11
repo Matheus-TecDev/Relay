@@ -211,6 +211,171 @@ def test_dlq_reprocess_unroutable_publish_remains_retryable_with_real_rabbitmq(
     assert event.status == EventStatus.PUBLISH_FAILED.value
 
 
+def test_concurrent_batch_reprocess_queues_each_event_once_with_real_postgres_and_rabbitmq(
+    integration_client: TestClient,
+) -> None:
+    seeded = [_seed_dead_letter_event("analytics.page_viewed") for _ in range(4)]
+    dead_letter_event_ids = [dead_letter_event_id for dead_letter_event_id, _ in seeded]
+    event_ids = [event_id for _, event_id in seeded]
+    barrier = Barrier(2)
+
+    # Opposite orderings would deadlock if a batch held locks across items.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(
+            executor.map(
+                lambda ids: _batch_reprocess_request(integration_client, ids, barrier),
+                (dead_letter_event_ids, list(reversed(dead_letter_event_ids))),
+            )
+        )
+
+    for dead_letter_event_id in dead_letter_event_ids:
+        assert sorted(_batch_item_status(response, dead_letter_event_id) for response in responses) == [
+            "conflict",
+            "queued",
+        ]
+    assert sum(response["summary"]["queued"] for response in responses) == len(seeded)
+    assert sum(response["summary"]["failed"] for response in responses) == 0
+
+    for event_id in event_ids:
+        assert _reprocess_log_count(event_id) == 1
+    assert _outbox_statuses(event_ids) == [OutboxStatus.PENDING.value] * len(seeded)
+
+    for _ in seeded:
+        _publish_next_outbox_message()
+
+    assert _outbox_statuses(event_ids) == [OutboxStatus.PUBLISHED.value] * len(seeded)
+    delivered_event_ids = [
+        message["event_id"] for message in _drain_queue(settings.rabbitmq_analytics_queue)
+    ]
+    assert sorted(delivered_event_ids) == sorted(event_ids)
+
+
+def test_concurrent_batch_and_single_reprocess_queue_event_once_with_real_postgres_and_rabbitmq(
+    integration_client: TestClient,
+) -> None:
+    shared_dead_letter_event_id, shared_event_id = _seed_dead_letter_event("analytics.page_viewed")
+    other_dead_letter_event_id, other_event_id = _seed_dead_letter_event("analytics.page_viewed")
+    barrier = Barrier(2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        batch_future = executor.submit(
+            _batch_reprocess_request,
+            integration_client,
+            [shared_dead_letter_event_id, other_dead_letter_event_id],
+            barrier,
+        )
+        single_future = executor.submit(
+            _attempt_dead_letter_reprocess_request,
+            integration_client,
+            shared_dead_letter_event_id,
+            barrier,
+        )
+        batch_response = batch_future.result(timeout=30)
+        single_result = single_future.result(timeout=30)
+
+    shared_outcomes = sorted([_batch_item_status(batch_response, shared_dead_letter_event_id), single_result])
+    assert shared_outcomes == ["conflict", "queued"]
+    assert _batch_item_status(batch_response, other_dead_letter_event_id) == "queued"
+    assert _reprocess_log_count(shared_event_id) == 1
+    assert _reprocess_log_count(other_event_id) == 1
+
+    _publish_next_outbox_message()
+    _publish_next_outbox_message()
+
+    delivered_event_ids = [
+        message["event_id"] for message in _drain_queue(settings.rabbitmq_analytics_queue)
+    ]
+    assert sorted(delivered_event_ids) == sorted([shared_event_id, other_event_id])
+
+
+def test_concurrent_batches_with_different_dlq_entries_for_same_event_queue_once_postgres(
+    integration_client: TestClient,
+) -> None:
+    first_entry_id, event_id = _seed_dead_letter_event("analytics.page_viewed")
+    second_entry_id = _seed_extra_dead_letter_entry(event_id, "analytics.page_viewed")
+    barrier = Barrier(2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(
+            executor.map(
+                lambda ids: _batch_reprocess_request(integration_client, ids, barrier),
+                ([first_entry_id], [second_entry_id]),
+            )
+        )
+
+    assert sorted(response["results"][0]["status"] for response in responses) == ["conflict", "queued"]
+    assert _reprocess_log_count(event_id) == 1
+    assert _outbox_statuses([event_id]) == [OutboxStatus.PENDING.value]
+
+    _publish_next_outbox_message()
+
+    delivered_messages = _drain_queue(settings.rabbitmq_analytics_queue)
+    assert [message["event_id"] for message in delivered_messages] == [event_id]
+
+
+def test_batch_reprocess_recovers_after_broker_outage_without_duplicate_publish(
+    integration_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = [_seed_dead_letter_event("analytics.page_viewed") for _ in range(2)]
+    dead_letter_event_ids = [dead_letter_event_id for dead_letter_event_id, _ in seeded]
+    event_ids = [event_id for _, event_id in seeded]
+
+    with monkeypatch.context() as broker_outage:
+        broker_outage.setattr(settings, "rabbitmq_port", 1)
+
+        # The request only persists to the outbox, so it succeeds while the broker is unreachable.
+        response = _batch_reprocess_request(integration_client, dead_letter_event_ids)
+        assert response["summary"] == {"total": 2, "queued": 2, "conflict": 0, "not_found": 0, "failed": 0}
+
+        for _ in seeded:
+            _publish_next_outbox_message()
+
+        with SessionLocal() as db:
+            failed_messages = list(
+                db.scalars(select(OutboxMessage).where(OutboxMessage.event_id.in_(event_ids))).all()
+            )
+            failed_events = list(db.scalars(select(Event).where(Event.id.in_(event_ids))).all())
+
+        assert [message.status for message in failed_messages] == [OutboxStatus.FAILED.value] * 2
+        assert all(message.published_at is None for message in failed_messages)
+        assert all(message.last_error is not None for message in failed_messages)
+        assert all(message.next_attempt_at is not None for message in failed_messages)
+        assert [event.status for event in failed_events] == [EventStatus.PUBLISH_FAILED.value] * 2
+
+        repeated_response = _batch_reprocess_request(integration_client, dead_letter_event_ids)
+        assert repeated_response["summary"]["conflict"] == 2
+
+    assert _drain_queue(settings.rabbitmq_analytics_queue) == []
+
+    # Simulate the outbox backoff window elapsing once the broker is reachable again.
+    with SessionLocal() as db:
+        for message in db.scalars(select(OutboxMessage).where(OutboxMessage.event_id.in_(event_ids))).all():
+            message.next_attempt_at = datetime.now(UTC)
+        db.commit()
+
+    for _ in seeded:
+        _publish_next_outbox_message()
+
+    with SessionLocal() as db:
+        recovered_messages = list(
+            db.scalars(select(OutboxMessage).where(OutboxMessage.event_id.in_(event_ids))).all()
+        )
+        recovered_events = list(db.scalars(select(Event).where(Event.id.in_(event_ids))).all())
+
+    assert [message.status for message in recovered_messages] == [OutboxStatus.PUBLISHED.value] * 2
+    assert [message.attempt_count for message in recovered_messages] == [2, 2]
+    assert [event.status for event in recovered_events] == [EventStatus.QUEUED.value] * 2
+
+    delivered_messages = _drain_queue(settings.rabbitmq_analytics_queue)
+    assert sorted(message["event_id"] for message in delivered_messages) == sorted(event_ids)
+    assert {message["correlation_id"] for message in delivered_messages} == {
+        "correlation-analytics.page_viewed"
+    }
+    assert {message["trace_id"] for message in delivered_messages} == {"trace-analytics.page_viewed"}
+    assert {message["routing_key"] for message in delivered_messages} == {"analytics.page_viewed"}
+
+
 def test_concurrent_outbox_acquire_with_two_pending_messages_uses_skip_locked_postgres() -> None:
     event_ids = [
         _create_event("customer.created", "events.created"),
@@ -464,6 +629,70 @@ def _seed_dead_letter_event(routing_key: str) -> tuple[str, str]:
         db.add(dead_letter_event)
         db.commit()
         return dead_letter_event.id, event.id
+
+
+def _seed_extra_dead_letter_entry(event_id: str, routing_key: str) -> str:
+    with SessionLocal() as db:
+        dead_letter_event = DeadLetterEvent(
+            event_id=event_id,
+            reason="retry_limit_exceeded",
+            payload={"event_id": event_id},
+            retry_count=4,
+            original_routing_key=routing_key,
+            error_message="handler failed again",
+        )
+        db.add(dead_letter_event)
+        db.commit()
+        return dead_letter_event.id
+
+
+def _batch_reprocess_request(
+    client: TestClient,
+    dead_letter_event_ids: list[str],
+    barrier: Barrier | None = None,
+) -> dict:
+    if barrier is not None:
+        barrier.wait(timeout=10)
+
+    response = client.post(
+        "/api/dead-letter-events/reprocess-batch",
+        json={"dead_letter_event_ids": dead_letter_event_ids},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _batch_item_status(response: dict, dead_letter_event_id: str) -> str:
+    return next(
+        item["status"]
+        for item in response["results"]
+        if item["dead_letter_event_id"] == dead_letter_event_id
+    )
+
+
+def _reprocess_log_count(event_id: str) -> int:
+    with SessionLocal() as db:
+        return db.scalar(
+            text(
+                "select count(*) from event_logs "
+                "where event_id = :event_id and message = 'Manual DLQ reprocess queued in outbox'"
+            ),
+            {"event_id": event_id},
+        )
+
+
+def _outbox_statuses(event_ids: list[str]) -> list[str]:
+    with SessionLocal() as db:
+        return list(
+            db.scalars(select(OutboxMessage.status).where(OutboxMessage.event_id.in_(event_ids))).all()
+        )
+
+
+def _drain_queue(queue_name: str) -> list[dict]:
+    messages = []
+    while (message := _get_message_from_queue(queue_name)) is not None:
+        messages.append(message)
+    return messages
 
 
 def _attempt_dead_letter_reprocess_request(
