@@ -1,4 +1,5 @@
 import type {
+  DeadLetterBatchReprocessResponse,
   DeadLetterEventDetail,
   DeadLetterEventItem,
   DeadLetterReprocessResponse
@@ -16,5 +17,13 @@ export async function fetchDeadLetterEventDetail(id: string): Promise<DeadLetter
 export async function reprocessDeadLetterEvent(id: string): Promise<DeadLetterReprocessResponse> {
   return apiRequest<DeadLetterReprocessResponse>(`/api/dead-letter-events/${id}/reprocess`, {
     method: "POST"
+  });
+}
+
+export async function reprocessDeadLetterEventsBatch(ids: string[]): Promise<DeadLetterBatchReprocessResponse> {
+  return apiRequest<DeadLetterBatchReprocessResponse>("/api/dead-letter-events/reprocess-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dead_letter_event_ids: ids })
   });
 }
