@@ -464,6 +464,11 @@ td span {
   color: #166534;
 }
 
+.select-cell {
+  width: 1%;
+  padding-right: 0;
+}
+
 .selection-bar {
   display: flex;
   align-items: center;
@@ -478,7 +483,7 @@ td span {
 }
 
 .batch-report {
-  border-top: 1px solid #edf1f6;
+  border-bottom: 1px solid #e8edf4;
   padding: 12px 16px;
 }
 
@@ -521,6 +526,7 @@ td span {
 }
 
 .confirm-dialog {
+  align-self: center;
   width: min(520px, 100%);
 }
 
