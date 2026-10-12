@@ -114,11 +114,6 @@ class DeadLetterService:
         self,
         dead_letter_event_ids: list[str],
     ) -> list[BatchReprocessItemResult]:
-        """Reprocess each dead letter event in its own transaction, in request order.
-
-        An item is only reported as queued after its transaction committed. A failing
-        item is rolled back and reported individually without affecting the others.
-        """
         results: list[BatchReprocessItemResult] = []
         queued_event_ids: set[str] = set()
 
@@ -206,7 +201,6 @@ class DeadLetterService:
         )
 
     def _queue_reprocess(self, dead_letter_event_id: str) -> tuple[DeadLetterEvent, QueuedReprocess]:
-        """Stage one reprocess in the current transaction. The caller commits or rolls back."""
         self._apply_lock_timeout()
         dead_letter_event = self._get_dead_letter_event_for_reprocess(dead_letter_event_id)
         event = self._get_event_for_reprocess(dead_letter_event.event_id)
@@ -255,7 +249,6 @@ class DeadLetterService:
         )
 
     def _record_reprocess_queued(self, queued: QueuedReprocess) -> None:
-        # Only called after commit, so rolled back transactions never count as success.
         record_dead_letter_reprocess(queued.routing_key)
         logger.info(
             "Manual DLQ reprocess queued in outbox",

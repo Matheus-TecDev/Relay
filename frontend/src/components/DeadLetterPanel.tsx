@@ -38,7 +38,6 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
   const [batchReport, setBatchReport] = useState<DeadLetterBatchReprocessResponse | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
 
-  // The list can change under the selection after a refresh, so only keep what is still eligible.
   const activeSelectedIds = useMemo(
     () =>
       selectedIds.filter((id) => events.some((event) => event.id === id && event.event_status === REPROCESSABLE_STATUS)),
@@ -49,7 +48,6 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
     [events, activeSelectedIds]
   );
   const isSelectionFull = activeSelectedIds.length >= MAX_BATCH_SIZE;
-  // If the refresh after a batch fails the list is stale, so remember what that batch already queued.
   const queuedEventIds = useMemo(
     () =>
       new Set(
@@ -89,7 +87,6 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
     }
   }
 
-  // One entry per event, up to the batch limit, keeping what is already selected.
   function selectAllEligible() {
     const nextIds = [...activeSelectedIds];
     const nextEventIds = new Set(selectedEventIds);

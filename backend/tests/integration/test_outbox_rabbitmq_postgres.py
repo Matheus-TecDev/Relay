@@ -221,7 +221,6 @@ def test_concurrent_batch_reprocess_queues_each_event_once_with_real_postgres_an
     event_ids = [event_id for _, event_id in seeded]
     barrier = Barrier(2)
 
-    # Opposite orderings would deadlock if a batch held locks across items.
     with ThreadPoolExecutor(max_workers=2) as executor:
         responses = list(
             executor.map(
@@ -326,7 +325,6 @@ def test_batch_reprocess_recovers_after_broker_outage_without_duplicate_publish(
     with monkeypatch.context() as broker_outage:
         broker_outage.setattr(settings, "rabbitmq_port", 1)
 
-        # The request only persists to the outbox, so it succeeds while the broker is unreachable.
         response = _batch_reprocess_request(integration_client, dead_letter_event_ids)
         assert response["summary"] == {"total": 2, "queued": 2, "conflict": 0, "not_found": 0, "failed": 0}
 
@@ -350,7 +348,6 @@ def test_batch_reprocess_recovers_after_broker_outage_without_duplicate_publish(
 
     assert _drain_queue(settings.rabbitmq_analytics_queue) == []
 
-    # Simulate the outbox backoff window elapsing once the broker is reachable again.
     with SessionLocal() as db:
         for message in db.scalars(select(OutboxMessage).where(OutboxMessage.event_id.in_(event_ids))).all():
             message.next_attempt_at = datetime.now(UTC)
