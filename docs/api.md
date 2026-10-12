@@ -230,7 +230,8 @@ Possible errors:
 
 - `401`: missing, invalid, or expired token;
 - `404`: DLQ event not found;
-- `409`: reprocessing blocked by an operational safety rule.
+- `409`: reprocessing blocked by an operational safety rule;
+- `503`: the rows are locked by another operation and the lock was not released within `DEAD_LETTER_REPROCESS_LOCK_TIMEOUT_MS`, or PostgreSQL reported a deadlock. Nothing changed and the response carries `Retry-After`.
 
 ### `POST /api/dead-letter-events/reprocess-batch`
 
@@ -292,7 +293,7 @@ Response `200`:
 | `queued` | The item's transaction committed and its `OutboxMessage` is `pending`. | `null` |
 | `conflict` | Blocked by a safety rule; nothing changed. Equivalent to `409` on the single endpoint. | `not_dead_letter`, `already_processed`, `missing_routing_key`, `event_already_queued_in_batch` |
 | `not_found` | No DLQ record has this ID. Equivalent to `404` on the single endpoint. | `dead_letter_event_not_found` |
-| `failed` | An unexpected error happened and the item was rolled back. Safe to retry. | `internal_error` |
+| `failed` | The item could not be completed and was rolled back. Safe to retry. | `lock_unavailable`, `internal_error` |
 
 Partial success:
 
@@ -303,6 +304,9 @@ Partial success:
 - Repeating a request is safe: events queued by the first call are no longer in dead letter state, so they come back as `conflict` with `not_dead_letter` and are not queued again.
 - An event can have several DLQ records. Whichever record is reprocessed first queues the event; the others return `conflict`, with `event_already_queued_in_batch` when the first one was in the same request.
 - Concurrent batch and single requests for the same event are serialized by PostgreSQL row locks, so only one of them queues it.
+- Row locks are awaited for at most `DEAD_LETTER_REPROCESS_LOCK_TIMEOUT_MS` (default `2000`, `0` disables the limit). The limit is set per item transaction with a transaction-local `lock_timeout`, so it never leaks to other requests sharing the connection pool.
+- An item that hits the limit, or that PostgreSQL aborts as a deadlock victim, is rolled back and reported as `failed` with `lock_unavailable`. This is contention, not a safety rule, so it is never reported as `conflict`. The remaining items are still processed.
+- Other database errors are not treated as lock contention and stay `internal_error`.
 
 Possible errors:
 

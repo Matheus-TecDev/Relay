@@ -1,7 +1,8 @@
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
@@ -25,6 +26,8 @@ from app.services.outbox_service import create_outbox_message_for_event
 
 logger = logging.getLogger(__name__)
 
+LOCK_UNAVAILABLE_SQLSTATES = frozenset({"55P03", "40P01"})
+
 
 class DeadLetterEventNotFoundError(Exception):
     pass
@@ -35,6 +38,10 @@ class UnsafeReprocessError(Exception):
         super().__init__(message)
         self.reason = reason
         self.event_id = event_id
+
+
+class ReprocessLockUnavailableError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,12 @@ class DeadLetterService:
         try:
             dead_letter_event, queued = self._queue_reprocess(dead_letter_event_id)
             self.db.commit()
+        except DBAPIError as exc:
+            self.db.rollback()
+            if not self._is_lock_unavailable(exc):
+                raise
+            self._record_lock_unavailable(dead_letter_event_id, exc)
+            raise ReprocessLockUnavailableError from exc
         except Exception:
             self.db.rollback()
             raise
@@ -101,11 +114,6 @@ class DeadLetterService:
         self,
         dead_letter_event_ids: list[str],
     ) -> list[BatchReprocessItemResult]:
-        """Reprocess each dead letter event in its own transaction, in request order.
-
-        An item is only reported as queued after its transaction committed. A failing
-        item is rolled back and reported individually without affecting the others.
-        """
         results: list[BatchReprocessItemResult] = []
         queued_event_ids: set[str] = set()
 
@@ -160,8 +168,16 @@ class DeadLetterService:
                 message=str(exc),
                 event_id=exc.event_id,
             )
-        except Exception:
+        except Exception as exc:
             self.db.rollback()
+            if self._is_lock_unavailable(exc):
+                self._record_lock_unavailable(dead_letter_event_id, exc)
+                return BatchReprocessItemResult(
+                    dead_letter_event_id=dead_letter_event_id,
+                    status=DeadLetterReprocessItemStatus.FAILED,
+                    reason="lock_unavailable",
+                    message="Event is locked by another operation. Reprocess was rolled back. It is safe to retry.",
+                )
             record_dead_letter_reprocess_failed("unknown", "internal_error")
             logger.exception(
                 "Manual DLQ reprocess failed and was rolled back",
@@ -185,7 +201,7 @@ class DeadLetterService:
         )
 
     def _queue_reprocess(self, dead_letter_event_id: str) -> tuple[DeadLetterEvent, QueuedReprocess]:
-        """Stage one reprocess in the current transaction. The caller commits or rolls back."""
+        self._apply_lock_timeout()
         dead_letter_event = self._get_dead_letter_event_for_reprocess(dead_letter_event_id)
         event = self._get_event_for_reprocess(dead_letter_event.event_id)
         if event is None:
@@ -233,7 +249,6 @@ class DeadLetterService:
         )
 
     def _record_reprocess_queued(self, queued: QueuedReprocess) -> None:
-        # Only called after commit, so rolled back transactions never count as success.
         record_dead_letter_reprocess(queued.routing_key)
         logger.info(
             "Manual DLQ reprocess queued in outbox",
@@ -243,6 +258,35 @@ class DeadLetterService:
                 "routing_key": queued.routing_key,
                 "correlation_id": queued.correlation_id,
                 "trace_id": queued.trace_id,
+            },
+        )
+
+    def _apply_lock_timeout(self) -> None:
+        if self.db.get_bind().dialect.name != "postgresql":
+            return
+        self.db.execute(
+            select(
+                func.set_config(
+                    "lock_timeout",
+                    f"{settings.dead_letter_reprocess_lock_timeout_ms}ms",
+                    True,
+                )
+            )
+        )
+
+    @staticmethod
+    def _is_lock_unavailable(exc: Exception) -> bool:
+        if not isinstance(exc, DBAPIError):
+            return False
+        return getattr(exc.orig, "sqlstate", None) in LOCK_UNAVAILABLE_SQLSTATES
+
+    def _record_lock_unavailable(self, dead_letter_event_id: str, exc: DBAPIError) -> None:
+        record_dead_letter_reprocess_failed("unknown", "lock_unavailable")
+        logger.warning(
+            "Manual DLQ reprocess could not acquire row locks and was rolled back",
+            extra={
+                "dead_letter_event_id": dead_letter_event_id,
+                "sqlstate": getattr(exc.orig, "sqlstate", None),
             },
         )
 

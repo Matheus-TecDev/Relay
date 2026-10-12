@@ -1,9 +1,3 @@
-"""Initial schema
-
-Revision ID: 202607010001
-Revises:
-Create Date: 2026-07-01 00:01:00
-"""
 from typing import Sequence, Union
 
 from alembic import op

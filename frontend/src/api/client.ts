@@ -69,7 +69,6 @@ async function parseJson(response: Response): Promise<unknown> {
   }
 }
 
-// FastAPI sends a string for HTTP errors and a list of { msg } objects for 422 validation errors.
 function formatErrorDetail(detail: unknown): string | null {
   if (typeof detail === "string") {
     return detail || null;

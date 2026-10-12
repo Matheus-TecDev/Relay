@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from sqlalchemy import create_engine, func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -14,7 +15,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models import DeadLetterEvent, Event, EventAttempt, EventLog, EventProcessingState, OutboxMessage
-from app.services.dead_letter_service import DeadLetterService
+from app.services.dead_letter_service import DeadLetterService, ReprocessLockUnavailableError
 from app.services.outbox_service import acquire_next_outbox_message, publish_outbox_message
 
 BATCH_URL = "/api/dead-letter-events/reprocess-batch"
@@ -644,3 +645,95 @@ def test_single_reprocess_commit_failure_rolls_back_without_success_metric(
     assert event is not None
     assert event.status == EventStatus.DEAD_LETTER.value
     assert outbox_for(db_session, event_id).status == OutboxStatus.PUBLISHED.value
+
+
+class FakeDriverError(Exception):
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__("driver detail that must stay internal")
+        self.sqlstate = sqlstate
+
+
+def reprocess_failure_metric(reason: str) -> float:
+    return REGISTRY.get_sample_value(
+        "relay_dead_letter_reprocess_failures_total",
+        {"routing_key": "unknown", "reason": reason},
+    ) or 0.0
+
+
+def raise_database_error(monkeypatch: pytest.MonkeyPatch, sqlstate: str) -> None:
+    def failing_queue_outbox(self, dead_letter_event, event, routing_key) -> None:
+        raise OperationalError("select 1", {}, FakeDriverError(sqlstate))
+
+    monkeypatch.setattr(DeadLetterService, "_queue_outbox_reprocess", failing_queue_outbox)
+
+
+@pytest.mark.parametrize(
+    ("sqlstate", "expected_reason"),
+    [
+        ("55P03", "lock_unavailable"),
+        ("40P01", "lock_unavailable"),
+        ("57014", "internal_error"),
+        ("08006", "internal_error"),
+    ],
+)
+def test_batch_reprocess_classifies_only_lock_errors_as_lock_unavailable(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    sqlstate: str,
+    expected_reason: str,
+) -> None:
+    dead_letter_event = seed_dead_letter_event(db_session)
+    dead_letter_event_id, event_id = dead_letter_event.id, dead_letter_event.event_id
+    raise_database_error(monkeypatch, sqlstate)
+    metric_before = reprocess_failure_metric(expected_reason)
+
+    response = client.post(BATCH_URL, json={"dead_letter_event_ids": [dead_letter_event_id]})
+
+    assert response.status_code == 200
+    item = response.json()["results"][0]
+    assert item["status"] == "failed"
+    assert item["reason"] == expected_reason
+    assert "driver detail" not in item["message"]
+    assert reprocess_failure_metric(expected_reason) == metric_before + 1
+    db_session.expire_all()
+    event = db_session.get(Event, event_id)
+    assert event is not None
+    assert event.status == EventStatus.DEAD_LETTER.value
+    assert reprocess_log_count(db_session, event_id) == 0
+
+
+def test_single_reprocess_lock_error_returns_503_without_database_details(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dead_letter_event = seed_dead_letter_event(db_session)
+    dead_letter_event_id, event_id = dead_letter_event.id, dead_letter_event.event_id
+    raise_database_error(monkeypatch, "55P03")
+    metric_before = reprocess_success_metric()
+
+    response = client.post(f"/api/dead-letter-events/{dead_letter_event_id}/reprocess")
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert "driver detail" not in response.text
+    assert reprocess_success_metric() == metric_before
+    db_session.expire_all()
+    event = db_session.get(Event, event_id)
+    assert event is not None
+    assert event.status == EventStatus.DEAD_LETTER.value
+
+
+def test_single_reprocess_does_not_mask_unexpected_database_error_as_lock_error(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dead_letter_event = seed_dead_letter_event(db_session)
+    dead_letter_event_id = dead_letter_event.id
+    raise_database_error(monkeypatch, "57014")
+
+    with pytest.raises(OperationalError) as raised:
+        DeadLetterService(db_session).reprocess_dead_letter_event(dead_letter_event_id)
+
+    assert not isinstance(raised.value, ReprocessLockUnavailableError)
