@@ -36,6 +36,7 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
   const [isBatchConfirmOpen, setIsBatchConfirmOpen] = useState(false);
   const [isBatchReprocessing, setIsBatchReprocessing] = useState(false);
   const [batchReport, setBatchReport] = useState<DeadLetterBatchReprocessResponse | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
 
   // The list can change under the selection after a refresh, so only keep what is still eligible.
   const activeSelectedIds = useMemo(
@@ -48,10 +49,23 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
     [events, activeSelectedIds]
   );
   const isSelectionFull = activeSelectedIds.length >= MAX_BATCH_SIZE;
+  // If the refresh after a batch fails the list is stale, so remember what that batch already queued.
+  const queuedEventIds = useMemo(
+    () =>
+      new Set(
+        (batchReport?.results ?? [])
+          .filter((result) => result.status === "queued" && result.event_id !== null)
+          .map((result) => result.event_id)
+      ),
+    [batchReport]
+  );
 
   function selectionBlockReason(event: DeadLetterEventItem): string | null {
     if (event.event_status !== REPROCESSABLE_STATUS) {
       return `Event is ${event.event_status}, not in dead letter state`;
+    }
+    if (queuedEventIds.has(event.event_id)) {
+      return "Already queued by the last batch";
     }
     if (activeSelectedIds.includes(event.id)) {
       return null;
@@ -83,7 +97,11 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
       if (nextIds.length >= MAX_BATCH_SIZE) {
         break;
       }
-      if (event.event_status === REPROCESSABLE_STATUS && !nextEventIds.has(event.event_id)) {
+      if (
+        event.event_status === REPROCESSABLE_STATUS &&
+        !nextEventIds.has(event.event_id) &&
+        !queuedEventIds.has(event.event_id)
+      ) {
         nextIds.push(event.id);
         nextEventIds.add(event.event_id);
       }
@@ -100,6 +118,7 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
     setIsBatchReprocessing(true);
     setActionError(null);
     setActionMessage(null);
+    setBatchError(null);
     setBatchReport(null);
     reprocessDeadLetterEventsBatch(ids)
       .then((response) => {
@@ -108,7 +127,7 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
         return onRefresh();
       })
       .catch((reason: unknown) => {
-        setActionError(reason instanceof Error ? reason.message : "Failed to reprocess selected events");
+        setBatchError(reason instanceof Error ? reason.message : "Failed to reprocess selected events");
       })
       .finally(() => {
         setIsBatchReprocessing(false);
@@ -195,6 +214,38 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
         </div>
       ) : null}
 
+      {batchError ? (
+        <div className="inline-alert inline-alert-error" role="alert">
+          Batch reprocess failed: {batchError}. No result was received; refresh and check event statuses before retrying.
+        </div>
+      ) : null}
+
+      {batchReport ? (
+        <div className="batch-report" role="status">
+          <div className="section-title-row">
+            <h3>Batch reprocess result</h3>
+            <button className="icon-button" type="button" title="Dismiss" onClick={() => setBatchReport(null)}>
+              <X size={16} />
+            </button>
+          </div>
+          <p>
+            {batchReport.summary.queued} of {batchReport.summary.total} queued in the outbox
+            {batchReport.summary.conflict > 0 ? ` · ${batchReport.summary.conflict} skipped` : ""}
+            {batchReport.summary.not_found > 0 ? ` · ${batchReport.summary.not_found} not found` : ""}
+            {batchReport.summary.failed > 0 ? ` · ${batchReport.summary.failed} failed` : ""}
+          </p>
+          <ul className="batch-report-list">
+            {batchReport.results.map((result) => (
+              <li key={result.dead_letter_event_id}>
+                <span className={`status status-batch-${result.status}`}>{result.status}</span>
+                <span className="mono-cell">{shortId(result.event_id ?? result.dead_letter_event_id)}</span>
+                <span>{result.message ?? "Queued in the outbox; publication is asynchronous."}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {isLoading ? <div className="table-state">Loading dead letter events...</div> : null}
       {!isLoading && events.length === 0 ? <div className="table-state">No dead letter events found.</div> : null}
 
@@ -203,7 +254,7 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
           <table>
             <thead>
               <tr>
-                <th>
+                <th className="select-cell">
                   <input
                     type="checkbox"
                     aria-label="Select all eligible events"
@@ -227,7 +278,7 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
             <tbody>
               {events.map((event) => (
                 <tr key={event.id}>
-                  <td>
+                  <td className="select-cell">
                     <input
                       type="checkbox"
                       aria-label={`Select dead letter event ${shortId(event.id)}`}
@@ -275,32 +326,6 @@ export function DeadLetterPanel({ events, isLoading, error, onRefresh }: DeadLet
 
       {actionError ? <div className="inline-alert inline-alert-error">{actionError}</div> : null}
       {actionMessage ? <div className="inline-alert inline-alert-success">{actionMessage}</div> : null}
-
-      {batchReport ? (
-        <div className="batch-report" role="status">
-          <div className="section-title-row">
-            <h3>Batch reprocess result</h3>
-            <button className="icon-button" type="button" title="Dismiss" onClick={() => setBatchReport(null)}>
-              <X size={16} />
-            </button>
-          </div>
-          <p>
-            {batchReport.summary.queued} of {batchReport.summary.total} queued in the outbox
-            {batchReport.summary.conflict > 0 ? ` · ${batchReport.summary.conflict} skipped` : ""}
-            {batchReport.summary.not_found > 0 ? ` · ${batchReport.summary.not_found} not found` : ""}
-            {batchReport.summary.failed > 0 ? ` · ${batchReport.summary.failed} failed` : ""}
-          </p>
-          <ul className="batch-report-list">
-            {batchReport.results.map((result) => (
-              <li key={result.dead_letter_event_id}>
-                <span className={`status status-batch-${result.status}`}>{result.status}</span>
-                <span className="mono-cell">{shortId(result.event_id ?? result.dead_letter_event_id)}</span>
-                <span>{result.message ?? "Queued in the outbox; publication is asynchronous."}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
 
       {isBatchConfirmOpen ? (
         <div className="modal-backdrop" role="presentation">
