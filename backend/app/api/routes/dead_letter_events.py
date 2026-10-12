@@ -18,6 +18,7 @@ from app.schemas.dead_letter_event import (
 from app.services.dead_letter_service import (
     DeadLetterEventNotFoundError,
     DeadLetterService,
+    ReprocessLockUnavailableError,
     UnsafeReprocessError,
 )
 
@@ -112,6 +113,12 @@ def reprocess_dead_letter_event(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dead letter event not found.") from exc
     except UnsafeReprocessError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ReprocessLockUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dead letter event is locked by another operation. Nothing changed; retry shortly.",
+            headers={"Retry-After": "1"},
+        ) from exc
 
     event = dead_letter_event.event
     routing_key = dead_letter_event.original_routing_key or event.routing_key or ""

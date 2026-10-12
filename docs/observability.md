@@ -63,7 +63,7 @@ Relay exposes metrics at `GET /metrics`. Docker Compose scrapes:
 | `relay_dead_letter_events_total` | Current DLQ size |
 | `relay_dead_letter_oldest_event_age_seconds` | Age of the oldest DLQ event |
 | `relay_dead_letter_reprocess_total` | Manual reprocessing requests |
-| `relay_dead_letter_reprocess_failures_total` | Failed or blocked reprocessing requests |
+| `relay_dead_letter_reprocess_failures_total` | Failed or blocked reprocessing requests, by `reason` (including `lock_unavailable`) |
 | `relay_events_by_status` | Current events by status |
 | `relay_event_attempts_by_status` | Current attempts by status |
 

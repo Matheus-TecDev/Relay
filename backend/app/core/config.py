@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     idempotency_processing_timeout_seconds: int = 900
+    dead_letter_reprocess_lock_timeout_ms: int = Field(default=2000, ge=0)
     outbox_publisher_name: str = "relay-outbox-publisher"
     outbox_batch_size: int = 10
     outbox_poll_interval_seconds: float = 2.0

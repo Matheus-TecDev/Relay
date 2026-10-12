@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 from sqlalchemy import create_engine, select, text
 
 from app.core.auth import create_access_token
@@ -376,6 +378,153 @@ def test_batch_reprocess_recovers_after_broker_outage_without_duplicate_publish(
     assert {message["routing_key"] for message in delivered_messages} == {"analytics.page_viewed"}
 
 
+def test_batch_reprocess_lock_timeout_fails_only_locked_item_and_stays_retryable_postgres(
+    integration_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "dead_letter_reprocess_lock_timeout_ms", 300)
+    locked_dead_letter_event_id, locked_event_id = _seed_dead_letter_event("analytics.page_viewed")
+    free_dead_letter_event_id, free_event_id = _seed_dead_letter_event("analytics.page_viewed")
+    lock_failures_before = _reprocess_failure_metric("lock_unavailable")
+    internal_failures_before = _reprocess_failure_metric("internal_error")
+    successes_before = _reprocess_success_metric("analytics.page_viewed")
+
+    with SessionLocal() as blocker, ThreadPoolExecutor(max_workers=1) as executor:
+        blocker.scalar(select(Event.id).where(Event.id == locked_event_id).with_for_update())
+        started_at = time.monotonic()
+        try:
+            response = executor.submit(
+                _batch_reprocess_request,
+                integration_client,
+                [locked_dead_letter_event_id, free_dead_letter_event_id],
+            ).result(timeout=10)
+            elapsed_seconds = time.monotonic() - started_at
+            locked_event_status = blocker.scalar(select(Event.status).where(Event.id == locked_event_id))
+        finally:
+            blocker.rollback()
+
+    assert elapsed_seconds < 5
+    assert response["summary"] == {"total": 2, "queued": 1, "conflict": 0, "not_found": 0, "failed": 1}
+    locked_item, free_item = response["results"]
+    assert locked_item["status"] == "failed"
+    assert locked_item["reason"] == "lock_unavailable"
+    assert "lock_timeout" not in locked_item["message"]
+    assert "statement" not in locked_item["message"]
+    assert free_item["status"] == "queued"
+    assert free_item["event_id"] == free_event_id
+    assert locked_event_status == EventStatus.DEAD_LETTER.value
+    assert _reprocess_failure_metric("lock_unavailable") == lock_failures_before + 1
+    assert _reprocess_failure_metric("internal_error") == internal_failures_before
+    assert _reprocess_success_metric("analytics.page_viewed") == successes_before + 1
+    assert _reprocess_log_count(locked_event_id) == 0
+    assert _reprocess_log_count(free_event_id) == 1
+    assert _outbox_statuses([locked_event_id]) == [OutboxStatus.PUBLISHED.value]
+    assert _outbox_statuses([free_event_id]) == [OutboxStatus.PENDING.value]
+    assert _pooled_lock_timeouts() == {"0"}
+
+    retried = _batch_reprocess_request(
+        integration_client,
+        [locked_dead_letter_event_id, free_dead_letter_event_id],
+    )
+    assert _batch_item_status(retried, locked_dead_letter_event_id) == "queued"
+    assert _batch_item_status(retried, free_dead_letter_event_id) == "conflict"
+    assert _reprocess_log_count(locked_event_id) == 1
+    assert _reprocess_log_count(free_event_id) == 1
+
+    _publish_next_outbox_message()
+    _publish_next_outbox_message()
+
+    delivered_event_ids = [
+        message["event_id"] for message in _drain_queue(settings.rabbitmq_analytics_queue)
+    ]
+    assert sorted(delivered_event_ids) == sorted([locked_event_id, free_event_id])
+
+
+def test_single_reprocess_lock_timeout_returns_503_and_stays_retryable_postgres(
+    integration_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "dead_letter_reprocess_lock_timeout_ms", 300)
+    dead_letter_event_id, event_id = _seed_dead_letter_event("analytics.page_viewed")
+    successes_before = _reprocess_success_metric("analytics.page_viewed")
+
+    with SessionLocal() as blocker, ThreadPoolExecutor(max_workers=1) as executor:
+        blocker.scalar(
+            select(DeadLetterEvent.id).where(DeadLetterEvent.id == dead_letter_event_id).with_for_update()
+        )
+        started_at = time.monotonic()
+        try:
+            response = executor.submit(
+                integration_client.post,
+                f"/api/dead-letter-events/{dead_letter_event_id}/reprocess",
+            ).result(timeout=10)
+            elapsed_seconds = time.monotonic() - started_at
+        finally:
+            blocker.rollback()
+
+    assert elapsed_seconds < 5
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "1"
+    assert "lock_timeout" not in response.text
+    assert "statement" not in response.text
+    assert _reprocess_success_metric("analytics.page_viewed") == successes_before
+    assert _reprocess_log_count(event_id) == 0
+    assert _outbox_statuses([event_id]) == [OutboxStatus.PUBLISHED.value]
+
+    assert _attempt_dead_letter_reprocess_request(integration_client, dead_letter_event_id) == "queued"
+    assert _reprocess_success_metric("analytics.page_viewed") == successes_before + 1
+    assert _reprocess_log_count(event_id) == 1
+
+    _publish_next_outbox_message()
+
+    delivered_messages = _drain_queue(settings.rabbitmq_analytics_queue)
+    assert [message["event_id"] for message in delivered_messages] == [event_id]
+
+
+def test_batch_reprocess_deadlock_victim_is_rolled_back_and_batch_continues_postgres(
+    integration_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "dead_letter_reprocess_lock_timeout_ms", 30000)
+    deadlocked_dead_letter_event_id, deadlocked_event_id = _seed_dead_letter_event("analytics.page_viewed")
+    free_dead_letter_event_id, free_event_id = _seed_dead_letter_event("analytics.page_viewed")
+
+    with SessionLocal() as blocker, ThreadPoolExecutor(max_workers=1) as executor:
+        blocker.scalar(
+            select(OutboxMessage.id).where(OutboxMessage.event_id == deadlocked_event_id).with_for_update()
+        )
+        try:
+            batch_future = executor.submit(
+                _batch_reprocess_request,
+                integration_client,
+                [deadlocked_dead_letter_event_id, free_dead_letter_event_id],
+            )
+            _wait_for_backend_waiting_on_lock()
+            blocker.scalar(select(Event.id).where(Event.id == deadlocked_event_id).with_for_update())
+            response = batch_future.result(timeout=30)
+        finally:
+            blocker.rollback()
+
+    assert response["summary"] == {"total": 2, "queued": 1, "conflict": 0, "not_found": 0, "failed": 1}
+    assert _batch_item_status(response, deadlocked_dead_letter_event_id) == "failed"
+    assert response["results"][0]["reason"] == "lock_unavailable"
+    assert "deadlock" not in response["results"][0]["message"]
+    assert _batch_item_status(response, free_dead_letter_event_id) == "queued"
+    assert _reprocess_log_count(deadlocked_event_id) == 0
+    assert _outbox_statuses([deadlocked_event_id]) == [OutboxStatus.PUBLISHED.value]
+
+    retried = _batch_reprocess_request(integration_client, [deadlocked_dead_letter_event_id])
+    assert _batch_item_status(retried, deadlocked_dead_letter_event_id) == "queued"
+
+    _publish_next_outbox_message()
+    _publish_next_outbox_message()
+
+    delivered_event_ids = [
+        message["event_id"] for message in _drain_queue(settings.rabbitmq_analytics_queue)
+    ]
+    assert sorted(delivered_event_ids) == sorted([deadlocked_event_id, free_event_id])
+
+
 def test_concurrent_outbox_acquire_with_two_pending_messages_uses_skip_locked_postgres() -> None:
     event_ids = [
         _create_event("customer.created", "events.created"),
@@ -679,6 +828,46 @@ def _reprocess_log_count(event_id: str) -> int:
             ),
             {"event_id": event_id},
         )
+
+
+def _reprocess_failure_metric(reason: str) -> float:
+    return REGISTRY.get_sample_value(
+        "relay_dead_letter_reprocess_failures_total",
+        {"routing_key": "unknown", "reason": reason},
+    ) or 0.0
+
+
+def _reprocess_success_metric(routing_key: str) -> float:
+    return REGISTRY.get_sample_value(
+        "relay_dead_letter_reprocess_total",
+        {"routing_key": routing_key},
+    ) or 0.0
+
+
+def _pooled_lock_timeouts() -> set[str]:
+    sessions = [SessionLocal() for _ in range(5)]
+    try:
+        return {db.scalar(text("show lock_timeout")) for db in sessions}
+    finally:
+        for db in sessions:
+            db.close()
+
+
+def _wait_for_backend_waiting_on_lock(timeout_seconds: float = 5) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    with SessionLocal() as db:
+        while time.monotonic() < deadline:
+            waiting = db.scalar(
+                text(
+                    "select count(*) from pg_stat_activity "
+                    "where datname = current_database() and wait_event_type = 'Lock'"
+                )
+            )
+            db.rollback()
+            if waiting:
+                return
+            time.sleep(0.02)
+    raise AssertionError("No backend started waiting on a lock.")
 
 
 def _outbox_statuses(event_ids: list[str]) -> list[str]:
