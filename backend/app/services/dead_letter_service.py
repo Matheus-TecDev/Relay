@@ -1,10 +1,17 @@
 import logging
+from dataclasses import dataclass
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
-from app.core.enums import EventLogLevel, EventProcessingStatus, EventStatus, OutboxStatus
+from app.core.enums import (
+    DeadLetterReprocessItemStatus,
+    EventLogLevel,
+    EventProcessingStatus,
+    EventStatus,
+    OutboxStatus,
+)
 from app.models.dead_letter_event import DeadLetterEvent
 from app.models.event import Event
 from app.models.event_log import EventLog
@@ -24,7 +31,31 @@ class DeadLetterEventNotFoundError(Exception):
 
 
 class UnsafeReprocessError(Exception):
-    pass
+    def __init__(self, message: str, reason: str, event_id: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.event_id = event_id
+
+
+@dataclass(frozen=True)
+class QueuedReprocess:
+    dead_letter_event_id: str
+    event_id: str
+    routing_key: str
+    correlation_id: str
+    trace_id: str
+
+
+@dataclass(frozen=True)
+class BatchReprocessItemResult:
+    dead_letter_event_id: str
+    status: DeadLetterReprocessItemStatus
+    reason: str | None = None
+    message: str | None = None
+    event_id: str | None = None
+    routing_key: str | None = None
+    correlation_id: str | None = None
+    trace_id: str | None = None
 
 
 class DeadLetterService:
@@ -55,6 +86,106 @@ class DeadLetterService:
         return dead_letter_event
 
     def reprocess_dead_letter_event(self, dead_letter_event_id: str) -> DeadLetterEvent:
+        try:
+            dead_letter_event, queued = self._queue_reprocess(dead_letter_event_id)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+        self._record_reprocess_queued(queued)
+        self.db.refresh(dead_letter_event)
+        return dead_letter_event
+
+    def reprocess_dead_letter_events(
+        self,
+        dead_letter_event_ids: list[str],
+    ) -> list[BatchReprocessItemResult]:
+        """Reprocess each dead letter event in its own transaction, in request order.
+
+        An item is only reported as queued after its transaction committed. A failing
+        item is rolled back and reported individually without affecting the others.
+        """
+        results: list[BatchReprocessItemResult] = []
+        queued_event_ids: set[str] = set()
+
+        for dead_letter_event_id in dead_letter_event_ids:
+            result = self._reprocess_batch_item(dead_letter_event_id, queued_event_ids)
+            if result.status == DeadLetterReprocessItemStatus.QUEUED and result.event_id is not None:
+                queued_event_ids.add(result.event_id)
+            results.append(result)
+
+        logger.info(
+            "Manual DLQ batch reprocess finished",
+            extra={
+                "batch_size": len(results),
+                **{
+                    f"batch_{item_status.value}": sum(1 for result in results if result.status == item_status)
+                    for item_status in DeadLetterReprocessItemStatus
+                },
+            },
+        )
+        return results
+
+    def _reprocess_batch_item(
+        self,
+        dead_letter_event_id: str,
+        queued_event_ids: set[str],
+    ) -> BatchReprocessItemResult:
+        try:
+            _, queued = self._queue_reprocess(dead_letter_event_id)
+            self.db.commit()
+        except DeadLetterEventNotFoundError:
+            self.db.rollback()
+            return BatchReprocessItemResult(
+                dead_letter_event_id=dead_letter_event_id,
+                status=DeadLetterReprocessItemStatus.NOT_FOUND,
+                reason="dead_letter_event_not_found",
+                message="Dead letter event not found.",
+            )
+        except UnsafeReprocessError as exc:
+            self.db.rollback()
+            if exc.event_id is not None and exc.event_id in queued_event_ids:
+                return BatchReprocessItemResult(
+                    dead_letter_event_id=dead_letter_event_id,
+                    status=DeadLetterReprocessItemStatus.CONFLICT,
+                    reason="event_already_queued_in_batch",
+                    message="Another dead letter entry in this batch already queued the same event.",
+                    event_id=exc.event_id,
+                )
+            return BatchReprocessItemResult(
+                dead_letter_event_id=dead_letter_event_id,
+                status=DeadLetterReprocessItemStatus.CONFLICT,
+                reason=exc.reason,
+                message=str(exc),
+                event_id=exc.event_id,
+            )
+        except Exception:
+            self.db.rollback()
+            record_dead_letter_reprocess_failed("unknown", "internal_error")
+            logger.exception(
+                "Manual DLQ reprocess failed and was rolled back",
+                extra={"dead_letter_event_id": dead_letter_event_id},
+            )
+            return BatchReprocessItemResult(
+                dead_letter_event_id=dead_letter_event_id,
+                status=DeadLetterReprocessItemStatus.FAILED,
+                reason="internal_error",
+                message="Reprocess failed and was rolled back. It is safe to retry.",
+            )
+
+        self._record_reprocess_queued(queued)
+        return BatchReprocessItemResult(
+            dead_letter_event_id=dead_letter_event_id,
+            status=DeadLetterReprocessItemStatus.QUEUED,
+            event_id=queued.event_id,
+            routing_key=queued.routing_key,
+            correlation_id=queued.correlation_id,
+            trace_id=queued.trace_id,
+        )
+
+    def _queue_reprocess(self, dead_letter_event_id: str) -> tuple[DeadLetterEvent, QueuedReprocess]:
+        """Stage one reprocess in the current transaction. The caller commits or rolls back."""
         dead_letter_event = self._get_dead_letter_event_for_reprocess(dead_letter_event_id)
         event = self._get_event_for_reprocess(dead_letter_event.event_id)
         if event is None:
@@ -63,18 +194,25 @@ class DeadLetterService:
         routing_key = dead_letter_event.original_routing_key or event.routing_key
         if not routing_key:
             record_dead_letter_reprocess_failed("unknown", "missing_routing_key")
-            raise UnsafeReprocessError("Dead letter event does not have a routing key.")
+            raise UnsafeReprocessError(
+                "Dead letter event does not have a routing key.",
+                "missing_routing_key",
+                event.id,
+            )
 
         if event.status != EventStatus.DEAD_LETTER.value:
             record_dead_letter_reprocess_failed(routing_key, "not_dead_letter")
-            raise UnsafeReprocessError("Event is not currently in dead letter state.")
+            raise UnsafeReprocessError(
+                "Event is not currently in dead letter state.",
+                "not_dead_letter",
+                event.id,
+            )
 
         self._reset_processing_state(event.id, routing_key)
         event.status = EventStatus.QUEUED.value
         event.routing_key = routing_key
         self._queue_outbox_reprocess(dead_letter_event, event, routing_key)
 
-        record_dead_letter_reprocess(routing_key)
         self._log(
             event.id,
             EventLogLevel.INFO,
@@ -86,19 +224,27 @@ class DeadLetterService:
                 "trace_id": event.trace_id,
             },
         )
+        return dead_letter_event, QueuedReprocess(
+            dead_letter_event_id=dead_letter_event.id,
+            event_id=event.id,
+            routing_key=routing_key,
+            correlation_id=event.correlation_id,
+            trace_id=event.trace_id,
+        )
+
+    def _record_reprocess_queued(self, queued: QueuedReprocess) -> None:
+        # Only called after commit, so rolled back transactions never count as success.
+        record_dead_letter_reprocess(queued.routing_key)
         logger.info(
             "Manual DLQ reprocess queued in outbox",
             extra={
-                "event_id": event.id,
-                "dead_letter_event_id": dead_letter_event.id,
-                "routing_key": routing_key,
-                "correlation_id": event.correlation_id,
-                "trace_id": event.trace_id,
+                "event_id": queued.event_id,
+                "dead_letter_event_id": queued.dead_letter_event_id,
+                "routing_key": queued.routing_key,
+                "correlation_id": queued.correlation_id,
+                "trace_id": queued.trace_id,
             },
         )
-        self.db.commit()
-        self.db.refresh(dead_letter_event)
-        return dead_letter_event
 
     def _get_dead_letter_event_for_reprocess(self, dead_letter_event_id: str) -> DeadLetterEvent:
         dead_letter_event = self.db.scalar(
@@ -131,7 +277,7 @@ class DeadLetterService:
 
         if processing_state.status == EventProcessingStatus.PROCESSED.value:
             record_dead_letter_reprocess_failed(routing_key, "already_processed")
-            raise UnsafeReprocessError("Event was already processed.")
+            raise UnsafeReprocessError("Event was already processed.", "already_processed", event_id)
 
         processing_state.status = EventProcessingStatus.PENDING.value
         processing_state.worker_name = None

@@ -25,7 +25,7 @@ Event-driven systems must publish messages reliably, process asynchronous worklo
 - Reliable publishing through the Transactional Outbox pattern.
 - Domain-specific asynchronous processing.
 - Progressive retry backoff.
-- Dead Letter Queue inspection and manual reprocessing.
+- Dead Letter Queue inspection and manual reprocessing, one event at a time or in batches of up to 20.
 - Idempotent consumers.
 - Correlation through `correlation_id` and `trace_id`.
 - Operational web dashboard with filters, pagination, event details, and DLQ operations.
@@ -78,6 +78,7 @@ Default local credentials:
 | `GET` | `/api/dead-letter-events` | Lists DLQ events |
 | `GET` | `/api/dead-letter-events/{id}` | Returns DLQ event details |
 | `POST` | `/api/dead-letter-events/{id}/reprocess` | Reprocesses a dead-letter event |
+| `POST` | `/api/dead-letter-events/reprocess-batch` | Reprocesses up to 20 dead-letter events, reporting each result |
 
 ## Dashboard
 

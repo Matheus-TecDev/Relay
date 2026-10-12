@@ -1,9 +1,16 @@
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_current_user
+from app.core.enums import DeadLetterReprocessItemStatus
 from app.db.session import get_db
 from app.schemas.dead_letter_event import (
+    DeadLetterBatchReprocessItem,
+    DeadLetterBatchReprocessRequest,
+    DeadLetterBatchReprocessResponse,
+    DeadLetterBatchReprocessSummary,
     DeadLetterEventDetail,
     DeadLetterEventListItem,
     DeadLetterReprocessResponse,
@@ -65,6 +72,31 @@ def get_dead_letter_event(
         event=dead_letter_event.event,
         attempts=sorted(dead_letter_event.event.attempts, key=lambda attempt: attempt.attempt_number),
         logs=sorted(dead_letter_event.event.logs, key=lambda log: log.created_at),
+    )
+
+
+@router.post("/reprocess-batch", response_model=DeadLetterBatchReprocessResponse)
+def reprocess_dead_letter_events(
+    request: DeadLetterBatchReprocessRequest,
+    db: Session = Depends(get_db),
+) -> DeadLetterBatchReprocessResponse:
+    service = DeadLetterService(db)
+    results = service.reprocess_dead_letter_events(
+        [str(dead_letter_event_id) for dead_letter_event_id in request.dead_letter_event_ids]
+    )
+
+    def count(item_status: DeadLetterReprocessItemStatus) -> int:
+        return sum(1 for result in results if result.status == item_status)
+
+    return DeadLetterBatchReprocessResponse(
+        summary=DeadLetterBatchReprocessSummary(
+            total=len(results),
+            queued=count(DeadLetterReprocessItemStatus.QUEUED),
+            conflict=count(DeadLetterReprocessItemStatus.CONFLICT),
+            not_found=count(DeadLetterReprocessItemStatus.NOT_FOUND),
+            failed=count(DeadLetterReprocessItemStatus.FAILED),
+        ),
+        results=[DeadLetterBatchReprocessItem(**asdict(result)) for result in results],
     )
 
 

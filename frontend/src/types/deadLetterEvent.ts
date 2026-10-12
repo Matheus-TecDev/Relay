@@ -35,3 +35,29 @@ export type DeadLetterReprocessResponse = {
   correlation_id: string;
   trace_id: string;
 };
+
+export type DeadLetterBatchReprocessItemStatus = "queued" | "conflict" | "not_found" | "failed";
+
+export type DeadLetterBatchReprocessItem = {
+  dead_letter_event_id: string;
+  status: DeadLetterBatchReprocessItemStatus;
+  reason: string | null;
+  message: string | null;
+  event_id: string | null;
+  routing_key: string | null;
+  correlation_id: string | null;
+  trace_id: string | null;
+};
+
+export type DeadLetterBatchReprocessSummary = {
+  total: number;
+  queued: number;
+  conflict: number;
+  not_found: number;
+  failed: number;
+};
+
+export type DeadLetterBatchReprocessResponse = {
+  summary: DeadLetterBatchReprocessSummary;
+  results: DeadLetterBatchReprocessItem[];
+};

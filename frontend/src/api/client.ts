@@ -9,7 +9,7 @@ let getToken: () => string | null = () => null;
 let onUnauthorized: (() => void) | null = null;
 
 export type ApiErrorPayload = {
-  detail?: string;
+  detail?: unknown;
 };
 
 export class ApiError extends Error {
@@ -46,7 +46,7 @@ export async function apiRequest<T>(path: string, options?: RequestInit): Promis
   const payload = await parseJson(response);
 
   if (!response.ok) {
-    const detail = isApiErrorPayload(payload) && payload.detail ? payload.detail : "Request failed";
+    const detail = (isApiErrorPayload(payload) && formatErrorDetail(payload.detail)) || "Request failed";
     if (response.status === 401 && path !== "/api/auth/login") {
       onUnauthorized?.();
     }
@@ -67,6 +67,20 @@ async function parseJson(response: Response): Promise<unknown> {
   } catch (error) {
     throw new ApiError("Invalid response from backend", response.status, text);
   }
+}
+
+// FastAPI sends a string for HTTP errors and a list of { msg } objects for 422 validation errors.
+function formatErrorDetail(detail: unknown): string | null {
+  if (typeof detail === "string") {
+    return detail || null;
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => (typeof item === "object" && item !== null && "msg" in item ? String(item.msg) : null))
+      .filter((message): message is string => Boolean(message));
+    return messages.length > 0 ? messages.join("; ") : null;
+  }
+  return null;
 }
 
 function isApiErrorPayload(payload: unknown): payload is ApiErrorPayload {
